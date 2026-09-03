@@ -50,6 +50,13 @@ def _pending(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return context.application.bot_data.setdefault("pending", {})
 
 
+def _drop_pending(context: ContextTypes.DEFAULT_TYPE, giveaway_id: int) -> None:
+    """抽奖已发布或已丢弃，把它遗留的「等你回复」提示作废。"""
+    pending = _pending(context)
+    for message_id in [k for k, v in pending.items() if v.get("giveaway_id") == giveaway_id]:
+        pending.pop(message_id, None)
+
+
 async def _render_draft(context: ContextTypes.DEFAULT_TYPE, g: db.Giveaway) -> None:
     if not g.message_id:
         return
@@ -181,6 +188,7 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     elif action == "discard":
         db.update(g.id, status=db.STATUS_CANCELLED)
+        _drop_pending(context, g.id)
         await query.answer("已取消")
         try:
             await query.message.delete()
@@ -236,6 +244,7 @@ async def _publish(update: Update, context: ContextTypes.DEFAULT_TYPE, g: db.Giv
         await query.answer("口令玩法要先点「🔑 口令」设置口令。", show_alert=True)
         return
     await query.answer("已发布 🚀")
+    _drop_pending(context, g.id)
     await service.publish(context.bot, context.application, g, edit_message_id=g.message_id)
 
 
@@ -275,7 +284,13 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     pending.pop(msg.reply_to_message.message_id, None)
 
     g = db.get(info["giveaway_id"])
-    if g is None:
+    if g is None or g.status != db.STATUS_DRAFT:
+        # 抽奖已经发布 / 取消了，这条提示是过期的：清掉就行，绝不能再去编辑那条卡片
+        for m in (msg.reply_to_message, msg):
+            try:
+                await m.delete()
+            except TelegramError:
+                pass
         return
     value = (msg.text or "").strip()
     field = info["field"]

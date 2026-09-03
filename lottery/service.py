@@ -21,6 +21,17 @@ _EDIT_INTERVAL = 3.0
 
 JOB_PREFIX = "giveaway_end_"
 
+# Telegram 表示「这条消息没了 / 编辑不了」的几种说法
+_GONE_HINTS = (
+    "message to edit not found",
+    "message can't be edited",
+    "message identifier is not specified",
+)
+
+
+def _is_gone(exc: Exception) -> bool:
+    return any(h in str(exc).lower() for h in _GONE_HINTS)
+
 
 # ---------------------------------------------------------------- 发布
 
@@ -59,6 +70,25 @@ async def publish(
 
 # ---------------------------------------------------------------- 卡片刷新
 
+async def _repost_card(bot: Bot, g: db.Giveaway) -> None:
+    """原来的抽奖卡片被删了，补发一条新的，并把 message_id 指过去。"""
+    count = db.participant_count(g.id)
+    try:
+        msg = await bot.send_message(
+            chat_id=g.chat_id,
+            text=texts.card(g, count),
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboards.join_kb(g, count),
+        )
+    except TelegramError as exc:
+        # 连发都发不出去（被踢出群、没发言权限……），清掉 message_id 别再刷屏日志
+        db.update(g.id, message_id=None)
+        log.warning("抽奖 #%s 的卡片没了，补发也失败：%s", g.id, exc)
+        return
+    db.update(g.id, message_id=msg.message_id)
+    log.info("抽奖 #%s 的卡片已被删除，已补发一条新的（message_id=%s）", g.id, msg.message_id)
+
+
 async def refresh_card(bot: Bot, g: db.Giveaway, force: bool = False) -> None:
     if not g.message_id or g.status != db.STATUS_ACTIVE:
         return
@@ -76,8 +106,12 @@ async def refresh_card(bot: Bot, g: db.Giveaway, force: bool = False) -> None:
             reply_markup=keyboards.join_kb(g, count),
         )
     except BadRequest as exc:
-        if "not modified" not in str(exc).lower():
-            log.warning("刷新抽奖 #%s 卡片失败: %s", g.id, exc)
+        if "not modified" in str(exc).lower():
+            return
+        if _is_gone(exc):
+            await _repost_card(bot, db.get(g.id))
+            return
+        log.warning("刷新抽奖 #%s 卡片失败: %s", g.id, exc)
     except TelegramError as exc:
         log.warning("刷新抽奖 #%s 卡片失败: %s", g.id, exc)
 
@@ -111,7 +145,12 @@ async def finish(bot: Bot, giveaway_id: int, *, reason: str = "") -> bool:
                 reply_markup=keyboards.ended_kb(g),
             )
         except TelegramError as exc:
-            log.warning("收尾编辑抽奖 #%s 失败: %s", g.id, exc)
+            if _is_gone(exc):
+                log.info("抽奖 #%s 的卡片已被删除，跳过收尾编辑，开奖结果照常发。", g.id)
+                db.update(g.id, message_id=None)
+                g = db.get(g.id)
+            else:
+                log.warning("收尾编辑抽奖 #%s 失败: %s", g.id, exc)
 
     text = texts.result(g, wins, len(ok))
     if rejected:

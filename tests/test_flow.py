@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from telegram.error import BadRequest
+
 from lottery import db, service
 
 
@@ -25,6 +27,13 @@ class FakeBot:
 
     async def get_chat_member(self, chat_id, user_id):
         return SimpleNamespace(status="member")
+
+
+class BrokenEditBot(FakeBot):
+    """模拟「抽奖卡片被人删了」：编辑一律报 message to edit not found。"""
+
+    async def edit_message_text(self, chat_id, message_id, text, **kw):
+        raise BadRequest("Message to edit not found")
 
 
 class FakeApp:
@@ -119,6 +128,55 @@ class TestFlow(unittest.IsolatedAsyncioTestCase):
         winners = [w.user_id for w in db.winners(g.id)]
         self.assertEqual(winners, [1])
         self.assertIn("被剔除", self.bot.sent[-1])
+
+
+class TestDeletedCard(unittest.IsolatedAsyncioTestCase):
+    """卡片被删之后，机器人应该自愈而不是一直刷 WARNING。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        db.init(Path(self.tmp.name) / "d.db")
+        self.app = FakeApp()
+
+    def tearDown(self):
+        db.conn().close()
+        db._conn = None
+        self.tmp.cleanup()
+
+    async def test_refresh_reposts_when_card_deleted(self):
+        bot = BrokenEditBot()
+        gid = db.create_draft(-100, 1, {"prize": "会员卡"})
+        db.update(gid, status=db.STATUS_ACTIVE, message_id=555)
+        service._last_edit.clear()
+
+        await service.refresh_card(bot, db.get(gid), force=True)
+
+        new_id = db.get(gid).message_id
+        self.assertNotEqual(new_id, 555, "卡片没了应该补发一条新的")
+        self.assertEqual(len(bot.sent), 1)
+
+    async def test_repost_failure_clears_message_id(self):
+        class DeadBot(BrokenEditBot):
+            async def send_message(self, chat_id, text, **kw):
+                raise BadRequest("Chat not found")
+
+        bot = DeadBot()
+        gid = db.create_draft(-100, 1, {"prize": "会员卡"})
+        db.update(gid, status=db.STATUS_ACTIVE, message_id=555)
+        service._last_edit.clear()
+
+        await service.refresh_card(bot, db.get(gid), force=True)
+        self.assertIsNone(db.get(gid).message_id, "补发也失败时应清掉 message_id，别再反复重试")
+
+    async def test_finish_still_announces_when_card_deleted(self):
+        bot = BrokenEditBot()
+        gid = db.create_draft(-100, 1, {"prize": "会员卡", "winners_count": 1})
+        db.update(gid, status=db.STATUS_ACTIVE, message_id=555)
+        db.add_participant(gid, 1, "a", "甲")
+
+        self.assertTrue(await service.finish(bot, gid))
+        self.assertEqual(len(db.winners(gid)), 1)
+        self.assertIn("开奖", bot.sent[-1])
 
 
 if __name__ == "__main__":
