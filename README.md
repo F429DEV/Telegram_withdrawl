@@ -6,12 +6,27 @@
 
 ## 一分钟跑起来
 
+**Linux / macOS**（推荐用虚拟环境，Debian 12 / Ubuntu 24.04 起是强制的）：
+
 ```bash
-pip install -r requirements.txt
-cp .env.example .env          # Windows: copy .env.example .env
-# 把 @BotFather 给的 token 填进 .env 的 BOT_TOKEN
-python bot.py
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env          # 把 @BotFather 给的 token 填进 BOT_TOKEN
+.venv/bin/python bot.py
 ```
+
+或者直接 `./start.sh` —— 它会自动建好 .venv 并装依赖。
+
+**Windows**：
+
+```
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+copy .env.example .env
+.venv\Scripts\python bot.py
+```
+
+或者双击 `start.bat`。
 
 然后把机器人加进群，群管理员发 `/new`。
 
@@ -98,6 +113,8 @@ score = ( sha256("种子:抽奖编号:用户ID") 取前 64 位归一化到 (0,1)
 
 **Linux（systemd）**：
 
+先在项目目录里把虚拟环境建好，然后让 systemd 用 venv 里的 python：
+
 ```ini
 # /etc/systemd/system/tg-lottery.service
 [Unit]
@@ -106,7 +123,7 @@ After=network-online.target
 
 [Service]
 WorkingDirectory=/opt/mrt_drawl
-ExecStart=/usr/bin/python3 /opt/mrt_drawl/bot.py
+ExecStart=/opt/mrt_drawl/.venv/bin/python /opt/mrt_drawl/bot.py
 Restart=always
 RestartSec=5
 
@@ -115,7 +132,9 @@ WantedBy=multi-user.target
 ```
 
 ```bash
+sudo systemctl daemon-reload
 sudo systemctl enable --now tg-lottery
+sudo journalctl -u tg-lottery -f      # 看日志
 ```
 
 进程重启后，没开的定时抽奖会自动重新挂上；重启期间已经过点的会立刻补开。
@@ -156,3 +175,7 @@ data/lottery.db           运行时生成的数据库
 **机器人重启会丢抽奖吗？** 不会，全都在 SQLite 里。只有「正在填一半的配置面板」会失效，重新 `/new` 就行。
 
 **一个群能同时开几个？** 默认 5 个，改 `.env` 里的 `MAX_ACTIVE_PER_CHAT`。
+
+**pip 报 `externally-managed-environment`？** Debian 12 / Ubuntu 24.04 起（PEP 668）禁止往系统 Python 装包。
+按上面「一分钟跑起来」用 venv 就行。如果 `python3 -m venv` 也失败，先 `sudo apt install -y python3-venv python3-full`。
+`pip install --break-system-packages` 虽然能绕过去，但会污染系统 Python，不建议。
