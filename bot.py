@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
 
 from telegram import BotCommand, BotCommandScopeAllGroupChats
 from telegram.ext import Application, ContextTypes
@@ -42,13 +43,34 @@ async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.exception("处理更新时出错", exc_info=context.error)
 
 
+def _setup_logging(cfg: Config) -> None:
+    """控制台 + 滚动日志文件。文件满 LOG_MAX_MB 自动切一份，保留 LOG_BACKUPS 份。"""
+    fmt = logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, cfg.log_level, logging.INFO))
+    root.handlers.clear()
+
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    root.addHandler(console)
+
+    if cfg.log_file:
+        rotating = logging.handlers.RotatingFileHandler(
+            cfg.log_file,
+            maxBytes=cfg.log_max_mb * 1024 * 1024,
+            backupCount=cfg.log_backups,
+            encoding="utf-8",
+        )
+        rotating.setFormatter(fmt)
+        root.addHandler(rotating)
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)
+
+
 def main() -> None:
     cfg = Config.load()
-    logging.basicConfig(
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-        level=getattr(logging, cfg.log_level, logging.INFO),
-    )
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    _setup_logging(cfg)
 
     db.init(cfg.db_path)
     texts.set_timezone(cfg.display_tz)
@@ -59,6 +81,9 @@ def main() -> None:
     app.add_error_handler(_on_error)
 
     log.info("数据库：%s", cfg.db_path)
+    if cfg.log_file:
+        log.info("日志文件：%s（%s MB 滚动，保留 %s 份）",
+                 cfg.log_file, cfg.log_max_mb, cfg.log_backups)
     app.run_polling(allowed_updates=["message", "callback_query", "my_chat_member"],
                     drop_pending_updates=True)
 

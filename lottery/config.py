@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -31,6 +32,9 @@ class Config:
     log_level: str = "INFO"
     max_active_per_chat: int = 5
     display_tz: str = "Asia/Shanghai"
+    log_file: Optional[Path] = None
+    log_max_mb: int = 10
+    log_backups: int = 5
 
     @classmethod
     def load(cls) -> "Config":
@@ -52,4 +56,18 @@ class Config:
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             max_active_per_chat=int(os.getenv("MAX_ACTIVE_PER_CHAT", "5") or 5),
             display_tz=os.getenv("DISPLAY_TZ", "Asia/Shanghai").strip() or "Asia/Shanghai",
+            log_file=cls._log_file(os.getenv("LOG_FILE", "logs/bot.log").strip()),
+            log_max_mb=int(os.getenv("LOG_MAX_MB", "10") or 10),
+            log_backups=int(os.getenv("LOG_BACKUPS", "5") or 5),
         )
+
+    @staticmethod
+    def _log_file(raw: str) -> Optional[Path]:
+        """空字符串表示只往控制台打，不写文件。"""
+        if not raw:
+            return None
+        path = Path(raw)
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path

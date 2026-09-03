@@ -106,12 +106,37 @@ score = ( sha256("种子:抽奖编号:用户ID") 取前 64 位归一化到 (0,1)
 
 ---
 
+## 后台运行与日志
+
+`ctl.sh` 负责启停，日志由程序自己滚动写入 `logs/bot.log`。
+
+```bash
+./ctl.sh start        # 后台启动（首次会自动建 .venv 装依赖）
+./ctl.sh status       # 看是否在跑、PID、运行时长、内存、最近 5 行日志
+./ctl.sh log          # 实时跟日志，Ctrl+C 退出（不影响机器人）
+./ctl.sh tail 200     # 看最近 200 行
+./ctl.sh restart      # 重启
+./ctl.sh stop         # 停止（先 TERM，15 秒不退再 KILL）
+```
+
+几个细节：
+
+- `start` 之后会等 3 秒确认进程真的活着；如果启动即崩（token 填错、依赖缺失），
+  它会直接把最后 20 行输出打给你，而不是假装启动成功。
+- 重复 `start` 不会起第二个进程 —— 同一个 token 跑两个 polling 进程，Telegram 会报 Conflict。
+  脚本还会检查有没有「在跑但没 PID 文件」的野进程。
+- 日志有两个文件：`logs/bot.log` 是程序日志（默认 10 MB 滚动，保留 5 份，在 `.env` 里用
+  `LOG_MAX_MB` / `LOG_BACKUPS` 调），`logs/boot.log` 只兜底接住日志系统起来之前的崩溃信息。
+- 想只看控制台不写文件，把 `.env` 里的 `LOG_FILE` 留空。
+- `start.sh` 是前台运行版本，调试时用它能直接看到输出。
+
 ## 部署
 
 **Windows（开机自启）**：把 `start.bat` 做个快捷方式丢进
 `shell:startup`（Win+R 输入这个路径）。
 
-**Linux（systemd）**：
+**Linux（systemd）**：比 `ctl.sh` 更稳，开机自启、崩溃自动拉起都归系统管。
+两者别同时用，选一个。
 
 先在项目目录里把虚拟环境建好，然后让 systemd 用 venv 里的 python：
 
@@ -144,7 +169,9 @@ sudo journalctl -u tg-lottery -f      # 看日志
 ## 目录结构
 
 ```
-bot.py                    入口：读配置、初始化、启动 polling
+bot.py                    入口：读配置、初始化日志、启动 polling
+ctl.sh                    启停脚本：start / stop / restart / status / log / tail
+start.sh / start.bat      前台运行（调试用）
 lottery/
   config.py               环境变量 -> Config
   db.py                   SQLite 表结构与全部读写
@@ -160,6 +187,9 @@ lottery/
     manage.py             /list /end /cancel /reroll /verify /pick /settings
 tests/                    单元测试（python -m unittest discover -s tests -t .）
 data/lottery.db           运行时生成的数据库
+logs/bot.log              程序日志（滚动）
+logs/boot.log             启动阶段的兜底输出
+run/bot.pid               后台进程的 PID
 ```
 
 ---
