@@ -121,6 +121,12 @@ async def new_giveaway(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             secs = parse_duration(parts[2])
             if secs:
                 defaults["end_at"] = db.now() + secs
+        if len(parts) > 3 and parts[3]:
+            # 第四段是口令，写了就直接开口令玩法
+            words = db.clean_keywords(re.split(r"[\s,，、;；]+", parts[3]))
+            if words:
+                defaults["mode"] = db.MODE_KEYWORD
+                defaults["keyword"] = words
         quick = bool(defaults.get("prize"))
 
     settings = db.chat_settings(chat.id)
@@ -240,7 +246,7 @@ async def _publish(update: Update, context: ContextTypes.DEFAULT_TYPE, g: db.Giv
     if not g.prize.strip():
         await query.answer("先点「✏️ 奖品」写上抽什么。", show_alert=True)
         return
-    if g.mode == db.MODE_KEYWORD and not (g.keyword or "").strip():
+    if g.mode == db.MODE_KEYWORD and not g.keywords:
         await query.answer("口令玩法要先点「🔑 口令」设置口令。", show_alert=True)
         return
     await query.answer("已发布 🚀")
@@ -298,7 +304,9 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if field == "prize":
         db.update(g.id, prize=value[:200])
     elif field == "keyword":
-        db.update(g.id, keyword=value.split()[0][:32] if value else None)
+        # 空格、逗号、顿号、分号都能用来分隔多个口令
+        words = db.clean_keywords(re.split(r"[\s,，、;；]+", value)) if value else []
+        db.update(g.id, keyword=words or None)
     elif field == "winners_count":
         if value.isdigit():
             db.update(g.id, winners_count=max(1, min(100, int(value))))

@@ -82,3 +82,48 @@ class TestDb(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestKeywords(unittest.TestCase):
+    """多口令：设一组词，发中任意一个都算参与。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        db.init(Path(self.tmp.name) / "k.db")
+
+    def tearDown(self):
+        db.conn().close()
+        db._conn = None
+        self.tmp.cleanup()
+
+    def test_clean_dedupes_and_limits(self):
+        words = db.clean_keywords([" 抽 ", "抽", "", "发财", "ABC", "abc", "x" * 50])
+        self.assertEqual(words, ["抽", "发财", "ABC", "x" * db.KEYWORD_MAX_LEN])
+
+    def test_clean_caps_count(self):
+        self.assertEqual(len(db.clean_keywords([str(i) for i in range(50)])), db.KEYWORD_LIMIT)
+
+    def test_roundtrip_multiple(self):
+        gid = db.create_draft(-100, 1, {"prize": "x", "keyword": ["抽", "发财", "666"]})
+        self.assertEqual(db.get(gid).keywords, ["抽", "发财", "666"])
+        db.update(gid, keyword=["只剩一个"])
+        self.assertEqual(db.get(gid).keywords, ["只剩一个"])
+        db.update(gid, keyword=None)
+        self.assertEqual(db.get(gid).keywords, [])
+
+    def test_backward_compat_with_plain_text(self):
+        """老版本存的是裸字符串，升级后要还能读出来。"""
+        gid = db.create_draft(-100, 1, {"prize": "x"})
+        db.conn().execute("UPDATE giveaways SET keyword='抽' WHERE id=?", (gid,))
+        db.conn().commit()
+        self.assertEqual(db.get(gid).keywords, ["抽"])
+
+    def test_matching(self):
+        words = ["抽", "发财", "GoGo"]
+        self.assertEqual(db.matches_keyword(words, "抽"), "抽")
+        self.assertEqual(db.matches_keyword(words, "  发财 "), "发财")
+        self.assertEqual(db.matches_keyword(words, "gogo"), "GoGo")   # 英文忽略大小写
+        self.assertIsNone(db.matches_keyword(words, "我要抽奖"))        # 夹在句子里不算
+        self.assertIsNone(db.matches_keyword(words, "抽抽"))
+        self.assertIsNone(db.matches_keyword(words, ""))
+        self.assertIsNone(db.matches_keyword([], "抽"))

@@ -100,7 +100,12 @@ def card(g: db.Giveaway, count: int) -> str:
     if g.mode == db.MODE_BUTTON:
         parts.append("参与方式：点下面的「我要参与」按钮")
     elif g.mode == db.MODE_KEYWORD:
-        parts.append(f"参与方式：在本群发送口令 <code>{esc(g.keyword)}</code>")
+        if len(g.keywords) == 1:
+            parts.append(f"参与方式：在本群发送口令 <code>{esc(g.keywords[0])}</code>")
+        else:
+            words = "　".join(f"<code>{esc(k)}</code>" for k in g.keywords)
+            parts.append(f"参与方式：在本群发送下面<b>任意一个</b>口令即可参与")
+            parts.append(f"🔑 {words}")
     elif g.mode == db.MODE_POINTS:
         parts.append("参与方式：在本群正常发言即自动参与，发言越多中奖权重越高")
         parts.append(f"（单人权重上限 {g.weight_cap}）")
@@ -152,7 +157,12 @@ def draft_card(g: db.Giveaway) -> str:
         f"名额：{g.winners_count} 名",
     ]
     if g.mode == db.MODE_KEYWORD:
-        kw = f"<code>{esc(g.keyword)}</code>" if g.keyword else "<i>还没设置</i>"
+        if g.keywords:
+            kw = "　".join(f"<code>{esc(k)}</code>" for k in g.keywords)
+            if len(g.keywords) > 1:
+                kw += f"（{len(g.keywords)} 个，发中任意一个都算）"
+        else:
+            kw = "<i>还没设置</i>"
         lines.append(f"口令：{kw}")
     if g.end_at:
         lines.append(f"时长：到 {fmt_time(g.end_at)} 自动开奖")
@@ -196,6 +206,8 @@ HELP = (
     "/new — 打开配置面板，按按钮选玩法、名额、时长、门槛，最后点发布\n"
     "/new 奖品名 | 名额 | 时长 — 一行搞定，例：<code>/new 会员月卡 | 3 | 30m</code>\n"
     "　时长写法：30m / 2h / 1d，写 0 表示不限时\n"
+    "/new 奖品 | 名额 | 时长 | 口令1 口令2 — 第四段写口令就直接开口令玩法，\n"
+    "　例：<code>/new 会员月卡 | 3 | 30m | 抽 发财 666</code>，发中任意一个都算参与\n"
     "/pick 3 — 回复一条包含名单的消息（每行或逗号分隔一个），直接从名单里抽 3 个\n\n"
     "<b>管理进行中的抽奖</b>\n"
     "/list — 列出本群进行中的抽奖\n"
@@ -207,7 +219,7 @@ HELP = (
     "/settings — 谁能发起抽奖、默认要求加入哪些频道\n\n"
     "<b>玩法说明</b>\n"
     "• 按钮：发一条带按钮的消息，点一下就报名\n"
-    "• 口令：在群里发指定口令即报名，不刷屏\n"
+    "• 口令：在群里发指定口令即报名；可以一次设多个口令，发中任意一个都算\n"
     "• 积分：抽奖期间正常聊天自动参与，发言越多权重越高\n"
     "• 名单：管理员贴一份名单，直接抽\n\n"
     "开奖用的是可验证的随机算法：种子会公示，任何人都能复算结果。"
@@ -217,7 +229,13 @@ NOT_GROUP = "这个命令要在群里用。把我加到群里，然后在群里�
 NOT_ADMIN = "只有群管理员能发起 / 管理抽奖。"
 NO_DRAFT = "没找到你的草稿，重新发 /new 吧。"
 PRIZE_PROMPT = "请<b>回复这条消息</b>，告诉我奖品是什么（60 秒内有效）。"
-KEYWORD_PROMPT = "请<b>回复这条消息</b>，输入参与口令，例如：<code>抽</code>"
+KEYWORD_PROMPT = (
+    "请<b>回复这条消息</b>，输入参与口令。\n"
+    "想设多个就用空格或逗号分开，发中<b>任意一个</b>都算参与，例如：\n"
+    "<code>抽 发财 666</code>\n"
+    "<i>最多 20 个，每个不超过 32 字。必须整条消息刚好等于某个口令才算，"
+    "夹在句子里不会误报名。</i>"
+)
 CHANNEL_PROMPT = (
     "请<b>回复这条消息</b>，输入要求加入的频道/群，多个用空格分开，"
     "例如：<code>@my_channel @my_group</code>\n"

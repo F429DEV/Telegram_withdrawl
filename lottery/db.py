@@ -18,7 +18,7 @@ from typing import Any, Iterable, Optional
 # ---------------------------------------------------------------- 常量
 
 MODE_BUTTON = "button"      # 点按钮报名
-MODE_KEYWORD = "keyword"    # 群里发口令报名
+MODE_KEYWORD = "keyword"    # 群里发口令报名（可设多个口令，发中任意一个即参与）
 MODE_POINTS = "points"      # 按发言条数加权
 MODE_MANUAL = "manual"      # 管理员贴名单
 
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS giveaways (
     creator_id          INTEGER NOT NULL,
     prize               TEXT    NOT NULL DEFAULT '',
     mode                TEXT    NOT NULL DEFAULT 'button',
-    keyword             TEXT,
+    keyword             TEXT,          -- JSON 数组，存一个或多个口令
     winners_count       INTEGER NOT NULL DEFAULT 1,
     end_at              INTEGER,
     max_participants    INTEGER,
@@ -95,6 +95,54 @@ CREATE TABLE IF NOT EXISTS chat_settings (
 """
 
 
+KEYWORD_LIMIT = 20          # 一场抽奖最多设几个口令
+KEYWORD_MAX_LEN = 32        # 单个口令最长多少字符
+
+
+def parse_keywords(raw: Optional[str]) -> list[str]:
+    """口令列存的是 JSON 数组；老数据是一个裸字符串，这里一并兼容。"""
+    if not raw:
+        return []
+    raw = raw.strip()
+    if raw.startswith("["):
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return [raw]
+        if isinstance(value, list):
+            return [str(x).strip() for x in value if str(x).strip()]
+    return [raw]
+
+
+def clean_keywords(words: Iterable[str]) -> list[str]:
+    """去空、去重（忽略大小写）、限长、限个数，顺序保持用户输入的顺序。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for word in words:
+        word = str(word).strip()[:KEYWORD_MAX_LEN]
+        if not word:
+            continue
+        key = word.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(word)
+        if len(out) >= KEYWORD_LIMIT:
+            break
+    return out
+
+
+def matches_keyword(keywords: list[str], text: str) -> Optional[str]:
+    """整条消息等于某个口令才算（忽略首尾空白和英文大小写）。返回命中的那个口令。"""
+    text = (text or "").strip().casefold()
+    if not text:
+        return None
+    for word in keywords:
+        if word.strip().casefold() == text:
+            return word
+    return None
+
+
 # ---------------------------------------------------------------- 数据对象
 
 @dataclass
@@ -105,7 +153,7 @@ class Giveaway:
     creator_id: int
     prize: str
     mode: str
-    keyword: Optional[str]
+    keywords: list[str]
     winners_count: int
     end_at: Optional[int]
     max_participants: Optional[int]
@@ -127,7 +175,7 @@ class Giveaway:
             creator_id=row["creator_id"],
             prize=row["prize"],
             mode=row["mode"],
-            keyword=row["keyword"],
+            keywords=parse_keywords(row["keyword"]),
             winners_count=row["winners_count"],
             end_at=row["end_at"],
             max_participants=row["max_participants"],
@@ -192,14 +240,16 @@ def create_draft(chat_id: int, creator_id: int, defaults: dict[str, Any] | None 
     d = defaults or {}
     cur = _exec(
         """INSERT INTO giveaways
-           (chat_id, creator_id, prize, mode, winners_count, end_at, max_participants,
+           (chat_id, creator_id, prize, mode, keyword, winners_count, end_at, max_participants,
             require_channels, require_username, min_seen_hours, status, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             chat_id,
             creator_id,
             d.get("prize", ""),
             d.get("mode", MODE_BUTTON),
+            json.dumps(clean_keywords(d["keyword"]), ensure_ascii=False)
+            if d.get("keyword") else None,
             d.get("winners_count", 1),
             d.get("end_at"),
             d.get("max_participants"),
@@ -241,6 +291,8 @@ def update(giveaway_id: int, **fields: Any) -> None:
             raise KeyError(f"不可更新的字段: {key}")
         if key == "require_channels":
             value = json.dumps(value or [], ensure_ascii=False)
+        if key == "keyword" and isinstance(value, (list, tuple)):
+            value = json.dumps(clean_keywords(value), ensure_ascii=False) if value else None
         if isinstance(value, bool):
             value = int(value)
         sets.append(f"{key}=?")

@@ -117,7 +117,8 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # 口令报名
     if text:
         for g in db.active_keyword_giveaways(chat.id):
-            if not g.keyword or text != g.keyword.strip():
+            hit = db.matches_keyword(g.keywords, text)
+            if hit is None:
                 continue
             if db.is_participant(g.id, user.id):
                 continue
