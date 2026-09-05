@@ -1,0 +1,6 @@
+# 仓库里统一用 LF；Windows 上的批处理必须是 CRLF。
+# 少了这条，在 Windows 上编辑过的 ctl.sh / start.sh 带着 CRLF 传到服务器，
+# 会报 "bad interpreter: /usr/bin/env: no such file or directory"。
+* text=auto eol=lf
+*.bat text eol=crlf
+*.sh  text eol=lf

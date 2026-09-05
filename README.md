@@ -15,7 +15,8 @@ cp .env.example .env          # 把 @BotFather 给的 token 填进 BOT_TOKEN
 .venv/bin/python bot.py
 ```
 
-或者直接 `./start.sh` —— 它会自动建好 .venv 并装依赖。
+或者一句 `./start.sh` 顶上面三步 —— 它会自己建好 .venv、装依赖再启动
+（第一次跑要给执行权限：`chmod +x start.sh ctl.sh`）。
 
 **Windows**：
 
@@ -26,7 +27,7 @@ copy .env.example .env
 .venv\Scripts\python bot.py
 ```
 
-或者双击 `start.bat`。
+或者双击 `start.bat`，同样会自动建 .venv 装依赖。
 
 然后把机器人加进群，群管理员发 `/new`。
 
@@ -164,6 +165,29 @@ score = ( sha256("种子:抽奖编号:用户ID") 取前 64 位归一化到 (0,1)
 
 ---
 
+## 前台运行（调试用）
+
+`start.sh`（Windows 是 `start.bat`）把机器人跑在当前终端里，日志直接刷在屏幕上，
+`Ctrl+C` 停止。第一次配置、换 token、改完代码想立刻看报错，用它最直接。
+
+```bash
+./start.sh
+```
+
+它做三件事，都是幂等的，重复跑没问题：
+
+1. 检查 `.env` 在不在，不在就提示你从 `.env.example` 复制一份
+2. 没有 `.venv` 就自动创建，并按 `requirements.txt` 装依赖（有了就跳过）
+3. 用 `.venv/bin/python` 启动 `bot.py`
+
+Windows 双击 `start.bat` 是一样的效果，跑完不会立刻关窗，方便看报错。
+
+⚠️ **前台运行有两个坑**，正式跑请用下面的 `ctl.sh` 或 systemd：
+
+- 关掉终端、SSH 断线，机器人就跟着没了
+- 它和 `ctl.sh start` 起的进程会抢同一个 token，Telegram 判 Conflict，两边都收不全消息。
+  调试前先 `./ctl.sh stop`
+
 ## 后台运行与日志
 
 `ctl.sh` 负责启停，日志由程序自己滚动写入 `logs/bot.log`。
@@ -186,7 +210,7 @@ score = ( sha256("种子:抽奖编号:用户ID") 取前 64 位归一化到 (0,1)
 - 日志有两个文件：`logs/bot.log` 是程序日志（默认 10 MB 滚动，保留 5 份，在 `.env` 里用
   `LOG_MAX_MB` / `LOG_BACKUPS` 调），`logs/boot.log` 只兜底接住日志系统起来之前的崩溃信息。
 - 想只看控制台不写文件，把 `.env` 里的 `LOG_FILE` 留空。
-- `start.sh` 是前台运行版本，调试时用它能直接看到输出。
+- 想在终端里直接盯着输出跑，用上面的 `./start.sh`（但别和 `ctl.sh start` 同时开）。
 
 ## 部署
 
@@ -229,7 +253,7 @@ sudo journalctl -u tg-lottery -f      # 看日志
 ```
 bot.py                    入口：读配置、初始化日志、启动 polling
 ctl.sh                    启停脚本：start / stop / restart / status / log / tail
-start.sh / start.bat      前台运行（调试用）
+start.sh / start.bat      前台运行（调试用，Ctrl+C 停止）
 lottery/
   config.py               环境变量 -> Config
   db.py                   SQLite 表结构与全部读写
