@@ -43,10 +43,10 @@ class TestDb(unittest.TestCase):
         self.assertEqual(db.participant_count(gid), 1)
         self.assertTrue(db.is_participant(gid, 1))
 
-        db.bump_weight(gid, 1, cap=3)
-        db.bump_weight(gid, 1, cap=3)
-        db.bump_weight(gid, 1, cap=3)
-        self.assertEqual(db.participants(gid)[0].weight, 3)
+        db.bump_weight(gid, 1)
+        db.bump_weight(gid, 1)
+        db.bump_weight(gid, 1)
+        self.assertEqual(db.participants(gid)[0].weight, 4)
 
         self.assertTrue(db.remove_participant(gid, 1))
         self.assertEqual(db.participant_count(gid), 0)
@@ -127,3 +127,70 @@ class TestKeywords(unittest.TestCase):
         self.assertIsNone(db.matches_keyword(words, "抽抽"))
         self.assertIsNone(db.matches_keyword(words, ""))
         self.assertIsNone(db.matches_keyword([], "抽"))
+
+
+class TestInvites(unittest.TestCase):
+    """邀请记录：一个人在一个群只算一次，自己邀请自己不算。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        db.init(Path(self.tmp.name) / "i.db")
+
+    def tearDown(self):
+        db.conn().close()
+        db._conn = None
+        self.tmp.cleanup()
+
+    def test_record_and_count(self):
+        self.assertTrue(db.record_invite(-100, 2, 1))
+        self.assertTrue(db.record_invite(-100, 3, 1))
+        self.assertEqual(db.invite_count(-100, 1), 2)
+        self.assertEqual(db.invite_count(-100, 9), 0)
+
+    def test_same_invitee_counted_once(self):
+        """踢出去再拉回来不能刷权重。"""
+        self.assertTrue(db.record_invite(-100, 2, 1))
+        self.assertFalse(db.record_invite(-100, 2, 1))
+        self.assertFalse(db.record_invite(-100, 2, 5))   # 换个人拉也不再计
+        self.assertEqual(db.invite_count(-100, 1), 1)
+
+    def test_self_invite_ignored(self):
+        self.assertFalse(db.record_invite(-100, 1, 1))
+        self.assertEqual(db.invite_count(-100, 1), 0)
+
+    def test_scoped_by_chat(self):
+        db.record_invite(-100, 2, 1)
+        db.record_invite(-200, 2, 1)
+        self.assertEqual(db.invite_count(-100, 1), 1)
+        self.assertEqual(db.invite_count(-200, 1), 1)
+
+    def test_since_window(self):
+        db.record_invite(-100, 2, 1)
+        db.conn().execute("UPDATE invites SET created_at=1000 WHERE invitee_id=2")
+        db.conn().commit()
+        db.record_invite(-100, 3, 1)
+        self.assertEqual(db.invite_count(-100, 1), 2)
+        self.assertEqual(db.invite_count(-100, 1, since=2000), 1)
+
+    def test_points_weight_uncapped(self):
+        gid = db.create_draft(-100, 1, {"prize": "x", "mode": db.MODE_POINTS})
+        db.add_participant(gid, 7, None, "话痨")
+        for _ in range(200):
+            db.bump_weight(gid, 7)
+        self.assertEqual(db.participants(gid)[0].weight, 201)
+
+    def test_migration_adds_invite_weight(self):
+        """老库没有 invite_weight 列，init 时要能补上。"""
+        db.conn().close()
+        db._conn = None
+        path = Path(self.tmp.name) / "old.db"
+        import sqlite3
+        raw = sqlite3.connect(str(path))
+        raw.executescript(db.SCHEMA.replace(
+            "    invite_weight       INTEGER NOT NULL DEFAULT 0,   -- 每邀请 1 人加多少权重，0=不计\n", ""
+        ))
+        raw.commit()
+        raw.close()
+        db.init(path)
+        cols = {r["name"] for r in db.conn().execute("PRAGMA table_info(giveaways)")}
+        self.assertIn("invite_weight", cols)

@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS giveaways (
     require_channels    TEXT    NOT NULL DEFAULT '[]',
     require_username    INTEGER NOT NULL DEFAULT 0,
     min_seen_hours      INTEGER NOT NULL DEFAULT 0,
-    weight_cap          INTEGER NOT NULL DEFAULT 50,
+    weight_cap          INTEGER NOT NULL DEFAULT 0,   -- 已废弃：发言积分不再设上限
+    invite_weight       INTEGER NOT NULL DEFAULT 0,   -- 每邀请 1 人加多少权重，0=不计
     status              TEXT    NOT NULL DEFAULT 'draft',
     seed                TEXT,
     created_at          INTEGER NOT NULL,
@@ -85,6 +86,17 @@ CREATE TABLE IF NOT EXISTS user_seen (
     msg_count     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (chat_id, user_id)
 );
+
+-- 谁把谁拉进了这个群。一个人在一个群里只算一次，
+-- 踢出再拉回来不会重复计数。
+CREATE TABLE IF NOT EXISTS invites (
+    chat_id    INTEGER NOT NULL,
+    invitee_id INTEGER NOT NULL,
+    inviter_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, invitee_id)
+);
+CREATE INDEX IF NOT EXISTS idx_invites_inviter ON invites(chat_id, inviter_id, created_at);
 
 CREATE TABLE IF NOT EXISTS chat_settings (
     chat_id          INTEGER PRIMARY KEY,
@@ -161,6 +173,7 @@ class Giveaway:
     require_username: bool
     min_seen_hours: int
     weight_cap: int
+    invite_weight: int
     status: str
     seed: Optional[str]
     created_at: int
@@ -183,6 +196,7 @@ class Giveaway:
             require_username=bool(row["require_username"]),
             min_seen_hours=row["min_seen_hours"],
             weight_cap=row["weight_cap"],
+            invite_weight=row["invite_weight"],
             status=row["status"],
             seed=row["seed"],
             created_at=row["created_at"],
@@ -204,11 +218,27 @@ class Participant:
 _conn: Optional[sqlite3.Connection] = None
 
 
+# 版本升级时给老库补上的列：列名 -> 建列语句
+_ADDED_COLUMNS = {
+    "invite_weight": "ALTER TABLE giveaways ADD COLUMN invite_weight INTEGER NOT NULL DEFAULT 0",
+}
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    """CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，这里手动补。"""
+    have = {row["name"] for row in connection.execute("PRAGMA table_info(giveaways)")}
+    for column, sql in _ADDED_COLUMNS.items():
+        if column not in have:
+            connection.execute(sql)
+    connection.commit()
+
+
 def init(db_path: Path) -> sqlite3.Connection:
     global _conn
     _conn = sqlite3.connect(str(db_path), check_same_thread=False)
     _conn.row_factory = sqlite3.Row
     _conn.executescript(SCHEMA)
+    _migrate(_conn)
     _conn.commit()
     return _conn
 
@@ -280,7 +310,7 @@ def get_draft(chat_id: int, creator_id: int) -> Optional[Giveaway]:
 _UPDATABLE = {
     "message_id", "prize", "mode", "keyword", "winners_count", "end_at",
     "max_participants", "require_channels", "require_username",
-    "min_seen_hours", "weight_cap", "status", "seed", "ended_at",
+    "min_seen_hours", "weight_cap", "invite_weight", "status", "seed", "ended_at",
 }
 
 
@@ -356,10 +386,11 @@ def add_participant(
     return cur.rowcount > 0
 
 
-def bump_weight(giveaway_id: int, user_id: int, cap: int) -> None:
+def bump_weight(giveaway_id: int, user_id: int) -> None:
+    """发言积分不设上限，说一句加一分。"""
     _exec(
-        "UPDATE participants SET weight = MIN(weight + 1, ?) WHERE giveaway_id=? AND user_id=?",
-        (cap, giveaway_id, user_id),
+        "UPDATE participants SET weight = weight + 1 WHERE giveaway_id=? AND user_id=?",
+        (giveaway_id, user_id),
     )
 
 
@@ -434,6 +465,38 @@ def first_seen(chat_id: int, user_id: int) -> Optional[int]:
         "SELECT first_seen_at FROM user_seen WHERE chat_id=? AND user_id=?", (chat_id, user_id)
     ).fetchone()
     return int(row["first_seen_at"]) if row else None
+
+
+# ---------------------------------------------------------------- 邀请
+
+def record_invite(chat_id: int, invitee_id: int, inviter_id: int) -> bool:
+    """记一笔邀请。返回 True 表示这是一笔新邀请。
+
+    同一个人在同一个群只记第一次 —— 否则「踢出去再拉回来」就能无限刷权重。
+    """
+    if invitee_id == inviter_id:
+        return False
+    cur = _exec(
+        "INSERT OR IGNORE INTO invites (chat_id, invitee_id, inviter_id, created_at) "
+        "VALUES (?,?,?,?)",
+        (chat_id, invitee_id, inviter_id, now()),
+    )
+    return cur.rowcount > 0
+
+
+def invite_count(chat_id: int, inviter_id: int, since: Optional[int] = None) -> int:
+    """某人在本群邀请了多少人；since 给了就只数那个时间点之后的。"""
+    if since is None:
+        row = conn().execute(
+            "SELECT COUNT(*) AS c FROM invites WHERE chat_id=? AND inviter_id=?",
+            (chat_id, inviter_id),
+        ).fetchone()
+    else:
+        row = conn().execute(
+            "SELECT COUNT(*) AS c FROM invites WHERE chat_id=? AND inviter_id=? AND created_at>=?",
+            (chat_id, inviter_id, since),
+        ).fetchone()
+    return int(row["c"])
 
 
 # ---------------------------------------------------------------- 群设置

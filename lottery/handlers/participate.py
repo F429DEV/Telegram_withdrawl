@@ -95,6 +95,25 @@ async def join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ---------------------------------------------------------------- 群消息
 
+async def on_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """有人进群：记一笔「谁拉的谁」，给邀请加成用。"""
+    msg = update.effective_message
+    if not msg or not msg.new_chat_members:
+        return
+    inviter = msg.from_user
+    if inviter is None:
+        return
+    chat_id = update.effective_chat.id
+    for member in msg.new_chat_members:
+        if member.is_bot:
+            continue
+        # 自己通过邀请链接进群时，from_user 就是他本人 —— 这不算邀请
+        if member.id == inviter.id:
+            continue
+        if db.record_invite(chat_id, member.id, inviter.id):
+            log.info("群 %s：%s 邀请了 %s", chat_id, inviter.id, member.id)
+
+
 async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """每条群消息都会走这里：记录活跃度、处理口令、累计积分。"""
     msg = update.effective_message
@@ -141,7 +160,7 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # 发言积分
     for g in db.active_points_giveaways(chat.id):
         if db.is_participant(g.id, user.id):
-            db.bump_weight(g.id, user.id, g.weight_cap)
+            db.bump_weight(g.id, user.id)
             continue
         ok, _ = await eligibility.check(context.bot, g, user)
         if not ok:

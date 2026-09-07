@@ -29,6 +29,7 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("help", common.help_cmd))
     app.add_handler(CommandHandler(["new", "draw"], create.new_giveaway))
     app.add_handler(CommandHandler("list", manage.list_cmd))
+    app.add_handler(CommandHandler("view", manage.view_cmd))
     app.add_handler(CommandHandler("end", manage.end_cmd))
     app.add_handler(CommandHandler("cancel", manage.cancel_cmd))
     app.add_handler(CommandHandler("reroll", manage.reroll_cmd))
@@ -49,6 +50,11 @@ def register(app: Application) -> None:
 
     # ---- 进群问候 ----
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, common.greet_new_group))
+    # ---- 记录「谁拉了谁」，另开一个 group 才不会被上面的问候截胡 ----
+    app.add_handler(
+        MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, participate.on_new_members),
+        group=2,
+    )
 
     # ---- 所有群消息：活跃度、口令、积分（单独一个 group，保证前面的也能跑）----
     app.add_handler(

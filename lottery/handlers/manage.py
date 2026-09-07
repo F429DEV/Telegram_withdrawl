@@ -129,8 +129,7 @@ async def verify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await msg.reply_text("这个抽奖还没开奖，暂时没有可复核的种子。")
         return
 
-    people = db.participants(g.id)
-    weighted = g.mode == db.MODE_POINTS
+    people, weighted = service.weighted_participants(g)
     ranked = sorted(
         people,
         key=lambda p: (-engine.score(g.seed, g.id, p.user_id, p.weight if weighted else 1), p.user_id),
@@ -153,6 +152,113 @@ async def verify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         mark = "🏆" if i <= g.winners_count else "　"
         w = f" ×{p.weight}" if weighted else ""
         lines.append(f"{mark}{i}. {texts.esc(p.full_name)}{w} — {s:.6f}")
+    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
+                         disable_web_page_preview=True)
+
+
+# ---------------------------------------------------------------- /view
+
+_STATUS_LABEL = {
+    db.STATUS_ACTIVE: "进行中",
+    db.STATUS_ENDED: "已开奖",
+    db.STATUS_CANCELLED: "已取消",
+    db.STATUS_DRAFT: "草稿（还没发布）",
+}
+
+
+def _mode_detail(g: db.Giveaway) -> str:
+    if g.mode == db.MODE_KEYWORD:
+        if not g.keywords:
+            return "口令（还没设置口令）"
+        words = "　".join(f"<code>{texts.esc(k)}</code>" for k in g.keywords)
+        return f"口令（{len(g.keywords)} 个）：{words}"
+    if g.mode == db.MODE_POINTS:
+        return "发言积分（发言越多权重越高，不设上限）"
+    if g.mode == db.MODE_BUTTON:
+        return "点按钮报名"
+    return texts.MODE_LABEL.get(g.mode, g.mode)
+
+
+def _draw_condition(g: db.Giveaway) -> list[str]:
+    out = []
+    if g.end_at:
+        out.append(f"到 {texts.fmt_time(g.end_at)} 自动开奖")
+    if g.max_participants:
+        out.append(f"满 {g.max_participants} 人立即开奖")
+    if not out:
+        out.append("由管理员手动开奖")
+    return out
+
+
+async def view_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat, msg = update.effective_chat, update.effective_message
+    if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await msg.reply_text(texts.NOT_GROUP)
+        return
+
+    gid, err = _resolve(context, chat.id)
+    if gid is None:
+        await msg.reply_text(err + "\n用法：/view 12")
+        return
+    g = db.get(gid)
+    if g is None or g.chat_id != chat.id or g.status == db.STATUS_DRAFT:
+        await msg.reply_text("没找到这个编号的抽奖。用 /list 看本群的编号。")
+        return
+
+    people, weighted = service.weighted_participants(g)
+    lines = [
+        f"📋 <b>抽奖 #{g.id} 详情</b>",
+        "",
+        f"状态：{_STATUS_LABEL.get(g.status, g.status)}",
+        f"奖品：{texts.esc(g.prize) or '（未填写）'}",
+        f"玩法：{_mode_detail(g)}",
+        f"名额：{g.winners_count} 名",
+        "开奖条件：" + "；".join(_draw_condition(g)),
+    ]
+    if g.invite_weight:
+        lines.append(f"邀请加成：每邀请 1 人 +{g.invite_weight} 权重（只算本场开始后拉进来的）")
+    else:
+        lines.append("邀请加成：关")
+
+    reqs = []
+    if g.require_channels:
+        reqs.append("需先加入 " + "、".join(texts.esc(c) for c in g.require_channels))
+    if g.require_username:
+        reqs.append("需有用户名")
+    if g.min_seen_hours:
+        reqs.append(f"需在本群出现满 {texts.fmt_duration(g.min_seen_hours * 3600)}")
+    lines.append("参与门槛：" + ("；".join(reqs) if reqs else "无"))
+
+    lines += [
+        "",
+        f"参与人数：<b>{len(people)}</b>",
+        f"创建时间：{texts.fmt_time(g.created_at)}",
+    ]
+    if g.ended_at:
+        lines.append(f"结束时间：{texts.fmt_time(g.ended_at)}")
+
+    if weighted and people:
+        top = sorted(people, key=lambda p: (-p.weight, p.user_id))[:5]
+        total = sum(p.weight for p in people) or 1
+        lines.append("")
+        lines.append("<b>权重前 5：</b>")
+        for i, p in enumerate(top, 1):
+            share = p.weight / total * 100
+            lines.append(f"{i}. {texts.esc(p.full_name)} — 权重 {p.weight}（约 {share:.1f}%）")
+
+    if g.status == db.STATUS_ENDED:
+        wins = db.winners(g.id)
+        lines.append("")
+        if wins:
+            lines.append("<b>中奖者：</b>")
+            for i, w in enumerate(wins, 1):
+                lines.append(f"{i}. {texts.user_link(w.user_id, w.full_name, w.username)}")
+        else:
+            lines.append("<b>中奖者：</b>无（参与人数不足）")
+        if g.seed:
+            lines.append(f"随机种子：<code>{texts.esc(g.seed)}</code>")
+            lines.append(f"<i>用 /verify {g.id} 可复核开奖过程</i>")
+
     await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
                          disable_web_page_preview=True)
 

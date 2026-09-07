@@ -182,6 +182,8 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif action == "cap":
         nxt = _cycle(keyboards.CAPS, g.max_participants or 0)
         db.update(g.id, max_participants=nxt or None)
+    elif action == "invite":
+        db.update(g.id, invite_weight=_cycle(keyboards.INVITE_WEIGHTS, g.invite_weight))
     elif action == "prize":
         await _ask(context, query, g, "prize", texts.PRIZE_PROMPT)
         return

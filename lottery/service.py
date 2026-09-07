@@ -116,6 +116,24 @@ async def refresh_card(bot: Bot, g: db.Giveaway, force: bool = False) -> None:
         log.warning("刷新抽奖 #%s 卡片失败: %s", g.id, exc)
 
 
+# ---------------------------------------------------------------- 权重
+
+def weighted_participants(g: db.Giveaway) -> tuple[list[db.Participant], bool]:
+    """算出每个人的最终权重，并告诉调用方这场要不要按权重抽。
+
+    发言积分：权重 = 发言条数（不设上限）
+    邀请加成：权重 += 本场抽奖期间邀请进群的人数 × invite_weight
+    两者可以叠加；都没开的话所有人权重都是 1，就是等概率抽。
+    """
+    people = db.participants(g.id)
+    if g.invite_weight:
+        for p in people:
+            invited = db.invite_count(g.chat_id, p.user_id, since=g.created_at)
+            p.weight += invited * g.invite_weight
+    weighted = g.mode == db.MODE_POINTS or g.invite_weight > 0
+    return people, weighted
+
+
 # ---------------------------------------------------------------- 开奖
 
 async def finish(bot: Bot, giveaway_id: int, *, reason: str = "") -> bool:
@@ -123,13 +141,11 @@ async def finish(bot: Bot, giveaway_id: int, *, reason: str = "") -> bool:
     if g is None or g.status != db.STATUS_ACTIVE:
         return False
 
-    people = db.participants(g.id)
+    people, weighted = weighted_participants(g)
     ok, rejected = await eligibility.filter_participants(bot, g, people)
 
     seed = engine.new_seed()
-    wins = engine.draw(
-        ok, g.winners_count, seed, g.id, weighted=(g.mode == db.MODE_POINTS)
-    )
+    wins = engine.draw(ok, g.winners_count, seed, g.id, weighted=weighted)
     db.update(g.id, status=db.STATUS_ENDED, ended_at=db.now(), seed=seed)
     db.save_winners(g.id, wins)
     g = db.get(g.id)
@@ -176,10 +192,11 @@ async def reroll(bot: Bot, giveaway_id: int) -> bool:
     if g is None or g.status != db.STATUS_ENDED:
         return False
     old = {w.user_id for w in db.winners(g.id)}
-    people = [p for p in db.participants(g.id) if p.user_id not in old]
+    everyone, weighted = weighted_participants(g)
+    people = [p for p in everyone if p.user_id not in old]
     ok, _ = await eligibility.filter_participants(bot, g, people)
     seed = engine.new_seed()
-    wins = engine.draw(ok, g.winners_count, seed, g.id, weighted=(g.mode == db.MODE_POINTS))
+    wins = engine.draw(ok, g.winners_count, seed, g.id, weighted=weighted)
     db.update(g.id, seed=seed)
     db.save_winners(g.id, wins)
     g = db.get(g.id)

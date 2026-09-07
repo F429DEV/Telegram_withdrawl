@@ -181,3 +181,72 @@ class TestDeletedCard(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInviteWeight(unittest.IsolatedAsyncioTestCase):
+    """邀请加成：拉的人越多，权重越高。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        db.init(Path(self.tmp.name) / "iw.db")
+        self.bot = FakeBot()
+        self.app = FakeApp()
+
+    def tearDown(self):
+        db.conn().close()
+        db._conn = None
+        self.tmp.cleanup()
+
+    async def test_invite_weight_adds_up(self):
+        gid = db.create_draft(-100, 1, {"prize": "x", "winners_count": 1})
+        db.update(gid, invite_weight=3, status=db.STATUS_ACTIVE)
+        db.add_participant(gid, 1, None, "拉了两个")
+        db.add_participant(gid, 2, None, "没拉人")
+        db.record_invite(-100, 11, 1)
+        db.record_invite(-100, 12, 1)
+
+        people, weighted = service.weighted_participants(db.get(gid))
+        self.assertTrue(weighted)
+        by_id = {p.user_id: p.weight for p in people}
+        self.assertEqual(by_id[1], 1 + 2 * 3)   # 底分 1 + 两次邀请
+        self.assertEqual(by_id[2], 1)
+
+    async def test_invites_before_giveaway_do_not_count(self):
+        db.record_invite(-100, 11, 1)
+        db.conn().execute("UPDATE invites SET created_at=1000")
+        db.conn().commit()
+        gid = db.create_draft(-100, 1, {"prize": "x"})
+        db.update(gid, invite_weight=5, status=db.STATUS_ACTIVE)
+        db.add_participant(gid, 1, None, "老早就拉的")
+
+        people, _ = service.weighted_participants(db.get(gid))
+        self.assertEqual(people[0].weight, 1, "本场开始之前的邀请不该算进来")
+
+    async def test_no_invite_weight_means_unweighted(self):
+        gid = db.create_draft(-100, 1, {"prize": "x"})
+        db.update(gid, status=db.STATUS_ACTIVE)
+        db.add_participant(gid, 1, None, "甲")
+        db.record_invite(-100, 11, 1)
+        people, weighted = service.weighted_participants(db.get(gid))
+        self.assertFalse(weighted)
+        self.assertEqual(people[0].weight, 1)
+
+    async def test_points_and_invites_stack(self):
+        gid = db.create_draft(-100, 1, {"prize": "x", "mode": db.MODE_POINTS})
+        db.update(gid, invite_weight=2, status=db.STATUS_ACTIVE)
+        db.add_participant(gid, 1, None, "又说又拉", weight=10)
+        db.record_invite(-100, 11, 1)
+        people, weighted = service.weighted_participants(db.get(gid))
+        self.assertTrue(weighted)
+        self.assertEqual(people[0].weight, 12)
+
+    async def test_finish_uses_invite_weight(self):
+        gid = db.create_draft(-100, 1, {"prize": "x", "winners_count": 1})
+        db.update(gid, invite_weight=10, status=db.STATUS_ACTIVE, message_id=1)
+        db.add_participant(gid, 1, None, "拉了很多")
+        for invitee in range(100, 130):
+            db.record_invite(-100, invitee, 1)
+        for uid in range(2, 12):
+            db.add_participant(gid, uid, None, f"路人{uid}")
+        await service.finish(self.bot, gid)
+        self.assertEqual(len(db.winners(gid)), 1)

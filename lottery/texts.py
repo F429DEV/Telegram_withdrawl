@@ -107,9 +107,10 @@ def card(g: db.Giveaway, count: int) -> str:
             parts.append(f"参与方式：在本群发送下面<b>任意一个</b>口令即可参与")
             parts.append(f"🔑 {words}")
     elif g.mode == db.MODE_POINTS:
-        parts.append("参与方式：在本群正常发言即自动参与，发言越多中奖权重越高")
-        parts.append(f"（单人权重上限 {g.weight_cap}）")
+        parts.append("参与方式：在本群正常发言即自动参与，发言越多中奖权重越高（不设上限）")
     parts.append(f"🏆 名额：{g.winners_count} 名")
+    if g.invite_weight:
+        parts.append(f"👥 每邀请 1 位新成员进群，中奖权重 +{g.invite_weight}")
     parts.extend(_conditions(g))
     parts.extend(_requirements(g))
     parts.append("")
@@ -169,6 +170,7 @@ def draft_card(g: db.Giveaway) -> str:
     else:
         lines.append("时长：不限时")
     lines.append(f"人数上限：{g.max_participants} 人自动开奖" if g.max_participants else "人数上限：不限")
+    lines.append(f"邀请加成：每邀 1 人 +{g.invite_weight} 权重" if g.invite_weight else "邀请加成：关")
     reqs = _requirements(g)
     lines.append("门槛：" + ("；".join(r[2:] for r in reqs) if reqs else "无"))
     lines.append("")
@@ -211,6 +213,8 @@ HELP = (
     "/pick 3 — 回复一条包含名单的消息（每行或逗号分隔一个），直接从名单里抽 3 个\n\n"
     "<b>管理进行中的抽奖</b>\n"
     "/list — 列出本群进行中的抽奖\n"
+    "/view &lt;编号&gt; — 看某场抽奖的全部参数：玩法、名额、开奖条件、门槛、\n"
+    "　邀请加成、参与人数、权重前 5、中奖者\n"
     "/end &lt;编号&gt; — 立即开奖\n"
     "/cancel &lt;编号&gt; — 取消抽奖\n"
     "/reroll &lt;编号&gt; — 重新抽（排除已中奖的人）\n"
@@ -220,8 +224,12 @@ HELP = (
     "<b>玩法说明</b>\n"
     "• 按钮：发一条带按钮的消息，点一下就报名\n"
     "• 口令：在群里发指定口令即报名；可以一次设多个口令，发中任意一个都算\n"
-    "• 积分：抽奖期间正常聊天自动参与，发言越多权重越高\n"
+    "• 积分：抽奖期间正常聊天自动参与，发言越多权重越高，不设上限\n"
     "• 名单：管理员贴一份名单，直接抽\n\n"
+    "<b>邀请加成</b>\n"
+    "创建时点「👥 邀请加成」，每把 1 个人拉进群，中奖权重就 +N。\n"
+    "只算本场抽奖开始之后拉进来的人，同一个人只算一次（踢出再拉回来不重复计）。\n"
+    "自己通过邀请链接进群不算别人邀请的。\n\n"
     "开奖用的是可验证的随机算法：种子会公示，任何人都能复算结果。"
 )
 

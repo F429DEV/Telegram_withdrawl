@@ -13,6 +13,8 @@ DURATIONS = [0, 300, 600, 1800, 3600, 6 * 3600, 12 * 3600, 24 * 3600, 3 * 24 * 3
 CAPS = [0, 10, 20, 50, 100, 200, 500]
 # 防小号档位（小时）
 SEEN_HOURS = [0, 1, 6, 24, 72, 168]
+# 邀请 1 人加多少权重，0 = 不计邀请
+INVITE_WEIGHTS = [0, 1, 2, 3, 5, 10, 20]
 
 
 def _dur_label(seconds: int) -> str:
@@ -35,6 +37,14 @@ def draft_kb(g: db.Giveaway, remaining: int | None) -> Markup:
             ),
         ],
     ]
+    rows.append(
+        [
+            Btn(
+                f"👥 邀请加成：{('每人 +' + str(g.invite_weight)) if g.invite_weight else '关'}",
+                callback_data=f"d:{g.id}:invite",
+            )
+        ]
+    )
     third = [Btn("✏️ 奖品", callback_data=f"d:{g.id}:prize")]
     if g.mode == db.MODE_KEYWORD:
         third.append(Btn("🔑 口令", callback_data=f"d:{g.id}:keyword"))

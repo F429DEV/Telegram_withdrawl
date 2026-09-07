@@ -22,6 +22,7 @@ log = logging.getLogger("lottery")
 COMMANDS = [
     BotCommand("new", "发起抽奖"),
     BotCommand("list", "查看进行中的抽奖"),
+    BotCommand("view", "查看某个抽奖的详细参数"),
     BotCommand("end", "立即开奖"),
     BotCommand("cancel", "取消抽奖"),
     BotCommand("reroll", "重新抽取"),
