@@ -27,6 +27,7 @@ def register(app: Application) -> None:
     # ---- 命令 ----
     app.add_handler(CommandHandler("start", common.start))
     app.add_handler(CommandHandler("help", common.help_cmd))
+    app.add_handler(CommandHandler("viewmyinfo", common.viewmyinfo))
     app.add_handler(CommandHandler(["new", "draw"], create.new_giveaway))
     app.add_handler(CommandHandler("list", manage.list_cmd))
     app.add_handler(CommandHandler("view", manage.view_cmd))

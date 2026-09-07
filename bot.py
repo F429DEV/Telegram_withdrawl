@@ -29,6 +29,7 @@ COMMANDS = [
     BotCommand("verify", "查看开奖排名"),
     BotCommand("pick", "从名单里随机抽"),
     BotCommand("settings", "群设置"),
+    BotCommand("viewmyinfo", "查看自己的 ID 和本群记录"),
     BotCommand("help", "使用说明"),
 ]
 

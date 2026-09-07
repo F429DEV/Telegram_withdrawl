@@ -460,6 +460,22 @@ def touch_user(chat_id: int, user_id: int) -> None:
     )
 
 
+def user_stats(chat_id: int, user_id: int) -> Optional[dict[str, int]]:
+    """某人在本群的记录：第一次被看到的时间、累计发言条数。没见过返回 None。"""
+    row = conn().execute(
+        "SELECT first_seen_at, last_seen_at, msg_count FROM user_seen "
+        "WHERE chat_id=? AND user_id=?",
+        (chat_id, user_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "first_seen_at": int(row["first_seen_at"]),
+        "last_seen_at": int(row["last_seen_at"]),
+        "msg_count": int(row["msg_count"]),
+    }
+
+
 def first_seen(chat_id: int, user_id: int) -> Optional[int]:
     row = conn().execute(
         "SELECT first_seen_at FROM user_seen WHERE chat_id=? AND user_id=?", (chat_id, user_id)
