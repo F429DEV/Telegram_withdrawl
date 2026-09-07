@@ -250,3 +250,74 @@ class TestInviteWeight(unittest.IsolatedAsyncioTestCase):
             db.add_participant(gid, uid, None, f"路人{uid}")
         await service.finish(self.bot, gid)
         self.assertEqual(len(db.winners(gid)), 1)
+
+
+class TestReservations(unittest.IsolatedAsyncioTestCase):
+    """预留名额：指定的人必中，剩下的名额照常随机抽。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        db.init(Path(self.tmp.name) / "r.db")
+        self.bot = FakeBot()
+        self.app = FakeApp()
+
+    def tearDown(self):
+        db.conn().close()
+        db._conn = None
+        self.tmp.cleanup()
+
+    def _active(self, winners=3):
+        gid = db.create_draft(-100, 1, {"prize": "会员卡", "winners_count": winners})
+        db.update(gid, status=db.STATUS_ACTIVE, message_id=1)
+        for uid in range(1, 21):
+            db.add_participant(gid, uid, f"u{uid}", f"用户{uid}")
+        return gid
+
+    async def test_reserved_always_wins(self):
+        gid = self._active()
+        db.add_reservation(gid, 7, "u7", "内定的")
+        await service.finish(self.bot, gid)
+        winners = [w.user_id for w in db.winners(gid)]
+        self.assertEqual(winners[0], 7, "预留的人应该排在中奖名单最前")
+        self.assertEqual(len(winners), 3)
+        self.assertEqual(len(set(winners)), 3, "预留的人不该被重复抽中")
+
+    async def test_reserved_not_in_random_pool(self):
+        """预留的人已经占了名额，不能再进随机池里被抽第二次。"""
+        gid = self._active(winners=2)
+        db.add_reservation(gid, 5, "u5", "内定的")
+        await service.finish(self.bot, gid)
+        winners = [w.user_id for w in db.winners(gid)]
+        self.assertEqual(winners.count(5), 1)
+
+    async def test_reserved_can_be_outsider(self):
+        """给没参与的人预留也能生效。"""
+        gid = self._active(winners=1)
+        db.add_reservation(gid, 999, None, "群外的人")
+        await service.finish(self.bot, gid)
+        self.assertEqual([w.user_id for w in db.winners(gid)], [999])
+
+    async def test_reservations_capped_at_winner_count(self):
+        gid = self._active(winners=2)
+        for uid in (11, 12, 13, 14):
+            db.add_reservation(gid, uid, None, f"内定{uid}")
+        await service.finish(self.bot, gid)
+        winners = [w.user_id for w in db.winners(gid)]
+        self.assertEqual(winners, [11, 12], "超出名额的预留不该生效")
+
+    async def test_no_reservation_is_pure_random(self):
+        gid = self._active()
+        await service.finish(self.bot, gid)
+        self.assertEqual(len(db.winners(gid)), 3)
+
+    async def test_reroll_keeps_reserved(self):
+        gid = self._active(winners=2)
+        db.add_reservation(gid, 7, "u7", "内定的")
+        await service.finish(self.bot, gid)
+        first = [w.user_id for w in db.winners(gid)]
+        self.assertEqual(first[0], 7)
+
+        await service.reroll(self.bot, gid)
+        second = [w.user_id for w in db.winners(gid)]
+        self.assertEqual(second[0], 7, "重抽不该把预留的人抽掉")
+        self.assertNotEqual(second[1], first[1], "随机那一半应该换人")

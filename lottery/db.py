@@ -87,6 +87,17 @@ CREATE TABLE IF NOT EXISTS user_seen (
     PRIMARY KEY (chat_id, user_id)
 );
 
+-- 预留名额。只由机器人主人私聊设置，群里看不到。
+CREATE TABLE IF NOT EXISTS reservations (
+    giveaway_id INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    username    TEXT,
+    full_name   TEXT,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (giveaway_id, user_id),
+    FOREIGN KEY (giveaway_id) REFERENCES giveaways(id) ON DELETE CASCADE
+);
+
 -- 谁把谁拉进了这个群。一个人在一个群里只算一次，
 -- 踢出再拉回来不会重复计数。
 CREATE TABLE IF NOT EXISTS invites (
@@ -481,6 +492,77 @@ def first_seen(chat_id: int, user_id: int) -> Optional[int]:
         "SELECT first_seen_at FROM user_seen WHERE chat_id=? AND user_id=?", (chat_id, user_id)
     ).fetchone()
     return int(row["first_seen_at"]) if row else None
+
+
+# ---------------------------------------------------------------- 预留名额
+
+def add_reservation(
+    giveaway_id: int, user_id: int, username: Optional[str], full_name: str
+) -> bool:
+    cur = _exec(
+        "INSERT OR IGNORE INTO reservations "
+        "(giveaway_id, user_id, username, full_name, created_at) VALUES (?,?,?,?,?)",
+        (giveaway_id, user_id, username, full_name, now()),
+    )
+    return cur.rowcount > 0
+
+
+def remove_reservation(giveaway_id: int, user_id: int) -> bool:
+    cur = _exec(
+        "DELETE FROM reservations WHERE giveaway_id=? AND user_id=?", (giveaway_id, user_id)
+    )
+    return cur.rowcount > 0
+
+
+def reservations(giveaway_id: int) -> list[Participant]:
+    """按设置的先后顺序返回预留名单。
+
+    用 rowid 排而不是 created_at —— 同一秒内连着设几个的话，
+    created_at 会打平，顺序就乱了，而顺序决定超出名额时留下哪几个。
+    """
+    rows = conn().execute(
+        "SELECT user_id, username, full_name, created_at FROM reservations "
+        "WHERE giveaway_id=? ORDER BY rowid",
+        (giveaway_id,),
+    ).fetchall()
+    return [
+        Participant(r["user_id"], r["username"], r["full_name"] or "", 1, r["created_at"])
+        for r in rows
+    ]
+
+
+def reservation_count(giveaway_id: int) -> int:
+    row = conn().execute(
+        "SELECT COUNT(*) AS c FROM reservations WHERE giveaway_id=?", (giveaway_id,)
+    ).fetchone()
+    return int(row["c"])
+
+
+def find_user_by_username(chat_id: int, username: str) -> Optional[Participant]:
+    """在这个群参与过任何一场抽奖的人里，按用户名找人。"""
+    row = conn().execute(
+        """SELECT p.user_id, p.username, p.full_name FROM participants p
+           JOIN giveaways g ON g.id = p.giveaway_id
+           WHERE g.chat_id = ? AND LOWER(p.username) = LOWER(?)
+           ORDER BY p.joined_at DESC LIMIT 1""",
+        (chat_id, username.lstrip("@")),
+    ).fetchone()
+    if row is None:
+        return None
+    return Participant(row["user_id"], row["username"], row["full_name"] or "", 1, 0)
+
+
+def find_participant(giveaway_id: int, user_id: int) -> Optional[Participant]:
+    row = conn().execute(
+        "SELECT user_id, username, full_name, weight, joined_at FROM participants "
+        "WHERE giveaway_id=? AND user_id=?",
+        (giveaway_id, user_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return Participant(
+        row["user_id"], row["username"], row["full_name"] or "", row["weight"], row["joined_at"]
+    )
 
 
 # ---------------------------------------------------------------- 邀请

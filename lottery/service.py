@@ -144,8 +144,14 @@ async def finish(bot: Bot, giveaway_id: int, *, reason: str = "") -> bool:
     people, weighted = weighted_participants(g)
     ok, rejected = await eligibility.filter_participants(bot, g, people)
 
+    # 预留名额先占位，剩下的名额才走随机
+    reserved = db.reservations(g.id)[: g.winners_count]
+    reserved_ids = {r.user_id for r in reserved}
+    pool = [p for p in ok if p.user_id not in reserved_ids]
+
     seed = engine.new_seed()
-    wins = engine.draw(ok, g.winners_count, seed, g.id, weighted=weighted)
+    remaining = max(0, g.winners_count - len(reserved))
+    wins = reserved + engine.draw(pool, remaining, seed, g.id, weighted=weighted)
     db.update(g.id, status=db.STATUS_ENDED, ended_at=db.now(), seed=seed)
     db.save_winners(g.id, wins)
     g = db.get(g.id)
@@ -192,11 +198,15 @@ async def reroll(bot: Bot, giveaway_id: int) -> bool:
     if g is None or g.status != db.STATUS_ENDED:
         return False
     old = {w.user_id for w in db.winners(g.id)}
+    reserved = db.reservations(g.id)[: g.winners_count]
+    reserved_ids = {r.user_id for r in reserved}
     everyone, weighted = weighted_participants(g)
-    people = [p for p in everyone if p.user_id not in old]
+    # 排除上一轮中奖者；预留名额不参与重抽，保持原样
+    people = [p for p in everyone if p.user_id not in old and p.user_id not in reserved_ids]
     ok, _ = await eligibility.filter_participants(bot, g, people)
     seed = engine.new_seed()
-    wins = engine.draw(ok, g.winners_count, seed, g.id, weighted=weighted)
+    remaining = max(0, g.winners_count - len(reserved))
+    wins = reserved + engine.draw(ok, remaining, seed, g.id, weighted=weighted)
     db.update(g.id, seed=seed)
     db.save_winners(g.id, wins)
     g = db.get(g.id)

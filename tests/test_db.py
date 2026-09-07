@@ -194,3 +194,37 @@ class TestInvites(unittest.TestCase):
         db.init(path)
         cols = {r["name"] for r in db.conn().execute("PRAGMA table_info(giveaways)")}
         self.assertIn("invite_weight", cols)
+
+
+class TestReservationStore(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        db.init(Path(self.tmp.name) / "rs.db")
+        self.gid = db.create_draft(-100, 1, {"prize": "x"})
+
+    def tearDown(self):
+        db.conn().close()
+        db._conn = None
+        self.tmp.cleanup()
+
+    def test_add_remove(self):
+        self.assertTrue(db.add_reservation(self.gid, 7, "u7", "张三"))
+        self.assertFalse(db.add_reservation(self.gid, 7, "u7", "张三"))
+        self.assertEqual(db.reservation_count(self.gid), 1)
+        self.assertEqual(db.reservations(self.gid)[0].full_name, "张三")
+        self.assertTrue(db.remove_reservation(self.gid, 7))
+        self.assertFalse(db.remove_reservation(self.gid, 7))
+        self.assertEqual(db.reservation_count(self.gid), 0)
+
+    def test_order_is_insertion_order(self):
+        for uid in (9, 3, 5):
+            db.add_reservation(self.gid, uid, None, f"第{uid}")
+        self.assertEqual([r.user_id for r in db.reservations(self.gid)], [9, 3, 5])
+
+    def test_find_user_by_username(self):
+        db.add_participant(self.gid, 42, "ZhangSan", "张三")
+        found = db.find_user_by_username(-100, "@zhangsan")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.user_id, 42)
+        self.assertIsNone(db.find_user_by_username(-100, "@nobody"))
+        self.assertIsNone(db.find_user_by_username(-999, "@zhangsan"), "跨群不该查到")

@@ -12,7 +12,7 @@ from telegram.ext import (
     filters,
 )
 
-from . import common, create, manage, participate
+from . import common, create, manage, owner, participate
 
 GROUPS = filters.ChatType.GROUPS
 
@@ -37,6 +37,14 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("verify", manage.verify_cmd))
     app.add_handler(CommandHandler("pick", manage.pick_cmd))
     app.add_handler(CommandHandler("settings", manage.settings_cmd))
+
+    # ---- 主人私聊专用，不进命令菜单，群里不响应 ----
+    app.add_handler(
+        CommandHandler("reserve", owner.reserve_cmd, filters=filters.ChatType.PRIVATE)
+    )
+    app.add_handler(
+        CommandHandler("unreserve", owner.unreserve_cmd, filters=filters.ChatType.PRIVATE)
+    )
 
     # ---- 内联按钮 ----
     app.add_handler(CallbackQueryHandler(create.draft_callback, pattern=r"^d:\d+:"))

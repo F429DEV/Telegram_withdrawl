@@ -129,6 +129,17 @@ async def verify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await msg.reply_text("这个抽奖还没开奖，等开完再看排名。")
         return
 
+    if db.reservation_count(g.id):
+        # 这场的中奖名单不是纯随机产生的，硬给一份随机排名等于编数据
+        await msg.reply_text(
+            f"🔍 <b>抽奖 #{g.id}</b>\n\n"
+            f"奖品：{texts.esc(g.prize)}\n"
+            f"参与人数：{db.participant_count(g.id)}　名额：{g.winners_count}\n\n"
+            "本场未生成排名，中奖名单见开奖消息。",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     people, weighted = service.weighted_participants(g)
     ranked = sorted(
         people,
@@ -233,7 +244,7 @@ async def view_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if g.ended_at:
         lines.append(f"结束时间：{texts.fmt_time(g.ended_at)}")
 
-    if weighted and people:
+    if weighted and people and not db.reservation_count(g.id):
         top = sorted(people, key=lambda p: (-p.weight, p.user_id))[:5]
         total = sum(p.weight for p in people) or 1
         lines.append("")
