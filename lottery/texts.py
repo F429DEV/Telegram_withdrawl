@@ -132,17 +132,14 @@ def result(g: db.Giveaway, wins: list[db.Participant], total: int) -> str:
         at = f"（@{esc(w.username)}）" if w.username else ""
         lines.append(f"{i}. {user_link(w.user_id, w.full_name, w.username)} {at}")
     lines.append("")
-    lines.append(f"🔐 随机种子：<code>{esc(g.seed)}</code>")
-    lines.append(f"<i>编号 #{g.id}　用 /verify {g.id} 可复核开奖过程</i>")
+    lines.append(f"<i>编号 #{g.id}　用 /verify {g.id} 看完整排名</i>")
     return "\n".join(lines)
 
 
-def manual_result(prize: str, wins: list[str], total: int, seed: str) -> str:
+def manual_result(prize: str, wins: list[str], total: int, seed: str = "") -> str:
     lines = [f"🎉 <b>开奖：{esc(prize)}</b>", "", f"从 {total} 个候选里抽出 {len(wins)} 位："]
     for i, name in enumerate(wins, 1):
         lines.append(f"{i}. {esc(name)}")
-    lines.append("")
-    lines.append(f"🔐 随机种子：<code>{esc(seed)}</code>")
     return "\n".join(lines)
 
 
@@ -218,7 +215,7 @@ HELP = (
     "/end &lt;编号&gt; — 立即开奖\n"
     "/cancel &lt;编号&gt; — 取消抽奖\n"
     "/reroll &lt;编号&gt; — 重新抽（排除已中奖的人）\n"
-    "/verify &lt;编号&gt; — 公示参与名单和随机种子，复核开奖是否公平\n\n"
+    "/verify &lt;编号&gt; — 看这场抽奖的完整排名（第 1 名到最后）\n\n"
     "<b>群设置</b>\n"
     "/settings — 谁能发起抽奖、默认要求加入哪些频道\n\n"
     "<b>玩法说明</b>\n"
@@ -230,7 +227,8 @@ HELP = (
     "创建时点「👥 邀请加成」，每把 1 个人拉进群，中奖权重就 +N。\n"
     "只算本场抽奖开始之后拉进来的人，同一个人只算一次（踢出再拉回来不重复计）。\n"
     "自己通过邀请链接进群不算别人邀请的。\n\n"
-    "开奖用的是可验证的随机算法：种子会公示，任何人都能复算结果。"
+    "开奖用加权随机：没开加成时人人机会均等，开了积分或邀请加成的，"
+    "权重越高中奖概率越大。"
 )
 
 NOT_GROUP = "这个命令要在群里用。把我加到群里，然后在群里发 /new。"

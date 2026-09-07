@@ -126,7 +126,7 @@ async def verify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await msg.reply_text("没找到这个编号的抽奖。")
         return
     if g.status != db.STATUS_ENDED or not g.seed:
-        await msg.reply_text("这个抽奖还没开奖，暂时没有可复核的种子。")
+        await msg.reply_text("这个抽奖还没开奖，等开完再看排名。")
         return
 
     people, weighted = service.weighted_participants(g)
@@ -135,23 +135,19 @@ async def verify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         key=lambda p: (-engine.score(g.seed, g.id, p.user_id, p.weight if weighted else 1), p.user_id),
     )
     lines = [
-        f"🔍 <b>复核抽奖 #{g.id}</b>",
+        f"🔍 <b>抽奖 #{g.id} 排名</b>",
         "",
         f"奖品：{texts.esc(g.prize)}",
         f"参与人数：{len(people)}　名额：{g.winners_count}",
-        f"随机种子：<code>{texts.esc(g.seed)}</code>",
         "",
-        "算法：<code>score = (sha256(种子:抽奖号:用户id) 归一化) ** (1/权重)</code>，"
-        "按 score 从大到小取前 N 名。种子在开奖那一刻才生成并公示，"
-        "拿同样的名单和种子谁都能算出同样结果。",
-        "",
-        "<b>排名前 20：</b>",
+        f"<b>前 {min(20, len(ranked))} 名：</b>",
     ]
-    for i, p in enumerate(ranked[:20], 1):
-        s = engine.score(g.seed, g.id, p.user_id, p.weight if weighted else 1)
+    for i, person in enumerate(ranked[:20], 1):
         mark = "🏆" if i <= g.winners_count else "　"
-        w = f" ×{p.weight}" if weighted else ""
-        lines.append(f"{mark}{i}. {texts.esc(p.full_name)}{w} — {s:.6f}")
+        w = f"（权重 {person.weight}）" if weighted else ""
+        lines.append(f"{mark}第 {i} 名　{texts.esc(person.full_name)}{w}")
+    if len(ranked) > 20:
+        lines.append(f"<i>……还有 {len(ranked) - 20} 人未显示</i>")
     await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
                          disable_web_page_preview=True)
 
@@ -255,9 +251,7 @@ async def view_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 lines.append(f"{i}. {texts.user_link(w.user_id, w.full_name, w.username)}")
         else:
             lines.append("<b>中奖者：</b>无（参与人数不足）")
-        if g.seed:
-            lines.append(f"随机种子：<code>{texts.esc(g.seed)}</code>")
-            lines.append(f"<i>用 /verify {g.id} 可复核开奖过程</i>")
+        lines.append(f"<i>用 /verify {g.id} 看完整排名</i>")
 
     await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
                          disable_web_page_preview=True)
@@ -293,9 +287,9 @@ async def pick_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    wins, seed = engine.draw_names(names, count)
+    wins, _seed = engine.draw_names(names, count)
     await msg.reply_text(
-        texts.manual_result("名单抽奖", wins, len(names), seed),
+        texts.manual_result("名单抽奖", wins, len(names)),
         parse_mode=ParseMode.HTML,
     )
 

@@ -92,4 +92,4 @@ def join_kb(g: db.Giveaway, count: int) -> Markup | None:
 
 
 def ended_kb(g: db.Giveaway) -> Markup:
-    return Markup([[Btn("🔍 复核开奖", callback_data=f"j:{g.id}:verify")]])
+    return Markup([[Btn("🔍 查看排名", callback_data=f"j:{g.id}:verify")]])

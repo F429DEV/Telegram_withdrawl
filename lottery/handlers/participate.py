@@ -53,7 +53,7 @@ async def join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         wins = db.winners(g.id)
         names = "\n".join(f"{i}. {w.full_name}" for i, w in enumerate(wins, 1)) or "无"
         await query.answer(
-            f"种子 {g.seed}\n中奖：\n{names}\n\n群里发 /verify {g.id} 看完整名单。",
+            f"中奖：\n{names}\n\n群里发 /verify {g.id} 看完整排名。",
             show_alert=True,
         )
         return

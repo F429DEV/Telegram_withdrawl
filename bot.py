@@ -26,7 +26,7 @@ COMMANDS = [
     BotCommand("end", "立即开奖"),
     BotCommand("cancel", "取消抽奖"),
     BotCommand("reroll", "重新抽取"),
-    BotCommand("verify", "复核开奖过程"),
+    BotCommand("verify", "查看开奖排名"),
     BotCommand("pick", "从名单里随机抽"),
     BotCommand("settings", "群设置"),
     BotCommand("help", "使用说明"),
