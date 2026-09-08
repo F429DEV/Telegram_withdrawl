@@ -321,3 +321,89 @@ class TestReservations(unittest.IsolatedAsyncioTestCase):
         second = [w.user_id for w in db.winners(gid)]
         self.assertEqual(second[0], 7, "重抽不该把预留的人抽掉")
         self.assertNotEqual(second[1], first[1], "随机那一半应该换人")
+
+
+class TestMessageMode(unittest.IsolatedAsyncioTestCase):
+    """消息抽奖：随机抽一条群消息，作者中奖。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        db.init(Path(self.tmp.name) / "msg.db")
+        self.bot = FakeBot()
+        self.app = FakeApp()
+
+    def tearDown(self):
+        db.conn().close()
+        db._conn = None
+        self.tmp.cleanup()
+
+    def _make(self, winners=1):
+        gid = db.create_draft(-100, 1, {"prize": "会员卡", "mode": db.MODE_MESSAGE,
+                                        "winners_count": winners})
+        db.update(gid, status=db.STATUS_ACTIVE, message_id=1)
+        return gid
+
+    async def test_winner_comes_from_a_recorded_message(self):
+        gid = self._make()
+        mid = 1000
+        for uid in range(1, 6):
+            db.add_participant(gid, uid, f"u{uid}", f"用户{uid}")
+            for _ in range(3):
+                mid += 1
+                db.record_message(gid, mid, uid, f"u{uid}", f"用户{uid}", f"消息{mid}")
+        await service.finish(self.bot, gid)
+        wins = db.winners(gid)
+        self.assertEqual(len(wins), 1)
+        self.assertIn(wins[0].user_id, set(range(1, 6)))
+        self.assertIn("💬", self.bot.sent[-1], "开奖消息应该引用中奖的那条消息")
+
+    async def test_multiple_winners_are_distinct_people(self):
+        gid = self._make(winners=3)
+        mid = 2000
+        for uid in range(1, 6):
+            db.add_participant(gid, uid, None, f"用户{uid}")
+            for _ in range(10):
+                mid += 1
+                db.record_message(gid, mid, uid, None, f"用户{uid}", "水")
+        await service.finish(self.bot, gid)
+        ids = [w.user_id for w in db.winners(gid)]
+        self.assertEqual(len(ids), 3)
+        self.assertEqual(len(set(ids)), 3, "同一个人不该占两个名额")
+
+    async def test_more_messages_means_better_odds(self):
+        """发 30 条的人，应该明显比只发 1 条的人容易中。"""
+        hits = 0
+        rounds = 200
+        for r in range(rounds):
+            gid = self._make()
+            db.add_participant(gid, 1, None, "话痨")
+            db.add_participant(gid, 2, None, "潜水")
+            mid = r * 1000
+            for _ in range(30):
+                mid += 1
+                db.record_message(gid, mid, 1, None, "话痨", "水")
+            mid += 1
+            db.record_message(gid, mid, 2, None, "潜水", "冒泡")
+            await service.finish(self.bot, gid)
+            if db.winners(gid)[0].user_id == 1:
+                hits += 1
+        self.assertGreater(hits / rounds, 0.8, f"话痨中奖率只有 {hits / rounds}")
+
+    async def test_no_messages_means_no_winner(self):
+        gid = self._make()
+        db.add_participant(gid, 1, None, "只报名没说话")
+        await service.finish(self.bot, gid)
+        self.assertEqual(db.winners(gid), [])
+
+    async def test_reserved_slot_still_wins_in_message_mode(self):
+        gid = self._make(winners=2)
+        mid = 3000
+        for uid in range(1, 6):
+            db.add_participant(gid, uid, None, f"用户{uid}")
+            mid += 1
+            db.record_message(gid, mid, uid, None, f"用户{uid}", "水")
+        db.add_reservation(gid, 99, None, "内定的")
+        await service.finish(self.bot, gid)
+        ids = [w.user_id for w in db.winners(gid)]
+        self.assertEqual(ids[0], 99)
+        self.assertEqual(len(ids), 2)

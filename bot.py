@@ -30,6 +30,7 @@ COMMANDS = [
     BotCommand("pick", "从名单里随机抽"),
     BotCommand("settings", "群设置"),
     BotCommand("viewmyinfo", "查看自己的 ID 和本群记录"),
+    BotCommand("invite", "拿到自己的专属邀请链接"),
     BotCommand("help", "使用说明"),
 ]
 
@@ -86,8 +87,11 @@ def main() -> None:
     if cfg.log_file:
         log.info("日志文件：%s（%s MB 滚动，保留 %s 份）",
                  cfg.log_file, cfg.log_max_mb, cfg.log_backups)
-    app.run_polling(allowed_updates=["message", "callback_query", "my_chat_member"],
-                    drop_pending_updates=True)
+    # chat_member 必须显式声明，否则收不到「谁通过哪条邀请链接进群」
+    app.run_polling(
+        allowed_updates=["message", "callback_query", "my_chat_member", "chat_member"],
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":

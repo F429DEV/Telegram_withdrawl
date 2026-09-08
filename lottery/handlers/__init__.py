@@ -6,6 +6,7 @@ from telegram import Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
+    ChatMemberHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -28,6 +29,7 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("start", common.start))
     app.add_handler(CommandHandler("help", common.help_cmd))
     app.add_handler(CommandHandler("viewmyinfo", common.viewmyinfo))
+    app.add_handler(CommandHandler("invite", participate.invite_cmd))
     app.add_handler(CommandHandler(["new", "draw"], create.new_giveaway))
     app.add_handler(CommandHandler("list", manage.list_cmd))
     app.add_handler(CommandHandler("view", manage.view_cmd))
@@ -51,6 +53,7 @@ def register(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(create.requirement_callback, pattern=r"^r:\d+:"))
     app.add_handler(CallbackQueryHandler(participate.join_callback, pattern=r"^j:\d+:"))
     app.add_handler(CallbackQueryHandler(manage.settings_callback, pattern=r"^s:\d+:"))
+    app.add_handler(CallbackQueryHandler(manage.view_all_callback, pattern=r"^v:\d+:"))
 
     # ---- 对 ForceReply 的回复（要排在普通群消息前面）----
     app.add_handler(
@@ -59,10 +62,9 @@ def register(app: Application) -> None:
 
     # ---- 进群问候 ----
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, common.greet_new_group))
-    # ---- 记录「谁拉了谁」，另开一个 group 才不会被上面的问候截胡 ----
+    # ---- 邀请归因：只认机器人用 /invite 生成的专属链接 ----
     app.add_handler(
-        MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, participate.on_new_members),
-        group=2,
+        ChatMemberHandler(participate.on_chat_member, ChatMemberHandler.CHAT_MEMBER)
     )
 
     # ---- 所有群消息：活跃度、口令、积分（单独一个 group，保证前面的也能跑）----

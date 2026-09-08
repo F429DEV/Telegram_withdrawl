@@ -61,6 +61,16 @@ def draw(
     return list(ranked[:winners_count])
 
 
+def shuffle(items: Sequence[T], seed: str, giveaway_id: int, key) -> list[T]:
+    """按种子做一次确定性洗牌。key 取出每个元素的唯一标识（消息 id 之类）。"""
+    return sorted(
+        items,
+        key=lambda item: hashlib.sha256(
+            f"{seed}:{giveaway_id}:{key(item)}".encode()
+        ).hexdigest(),
+    )
+
+
 def draw_names(names: Sequence[str], winners_count: int, seed: str | None = None) -> tuple[list[str], str]:
     """手动名单模式：从一串名字里随机抽，返回 (中奖名单, seed)。"""
     seed = seed or new_seed()

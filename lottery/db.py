@@ -20,9 +20,10 @@ from typing import Any, Iterable, Optional
 MODE_BUTTON = "button"      # 点按钮报名
 MODE_KEYWORD = "keyword"    # 群里发口令报名（可设多个口令，发中任意一个即参与）
 MODE_POINTS = "points"      # 按发言条数加权
+MODE_MESSAGE = "message"    # 随机抽一条群消息，作者中奖
 MODE_MANUAL = "manual"      # 管理员贴名单
 
-MODES = (MODE_BUTTON, MODE_KEYWORD, MODE_POINTS, MODE_MANUAL)
+MODES = (MODE_BUTTON, MODE_KEYWORD, MODE_POINTS, MODE_MESSAGE, MODE_MANUAL)
 
 STATUS_DRAFT = "draft"
 STATUS_ACTIVE = "active"
@@ -86,6 +87,29 @@ CREATE TABLE IF NOT EXISTS user_seen (
     msg_count     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (chat_id, user_id)
 );
+
+-- 消息抽奖用：抽奖期间群里的每条消息都记一行，开奖时随机抽一条，作者中奖。
+CREATE TABLE IF NOT EXISTS messages (
+    giveaway_id INTEGER NOT NULL,
+    message_id  INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    username    TEXT,
+    full_name   TEXT,
+    excerpt     TEXT,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (giveaway_id, message_id),
+    FOREIGN KEY (giveaway_id) REFERENCES giveaways(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(giveaway_id, user_id);
+
+-- 机器人给每个人生成的专属邀请链接，用来把新成员算到邀请人头上。
+CREATE TABLE IF NOT EXISTS invite_links (
+    invite_link TEXT PRIMARY KEY,
+    chat_id     INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_invite_links_owner ON invite_links(chat_id, user_id);
 
 -- 预留名额。只由机器人主人私聊设置，群里看不到。
 CREATE TABLE IF NOT EXISTS reservations (
@@ -375,6 +399,14 @@ def active_points_giveaways(chat_id: int) -> list[Giveaway]:
     return [Giveaway.from_row(r) for r in rows]
 
 
+def active_by_mode(chat_id: int, mode: str) -> list[Giveaway]:
+    rows = conn().execute(
+        "SELECT * FROM giveaways WHERE chat_id=? AND status=? AND mode=?",
+        (chat_id, STATUS_ACTIVE, mode),
+    ).fetchall()
+    return [Giveaway.from_row(r) for r in rows]
+
+
 def recent_in_chat(chat_id: int, limit: int = 10) -> list[Giveaway]:
     rows = conn().execute(
         "SELECT * FROM giveaways WHERE chat_id=? AND status!=? ORDER BY id DESC LIMIT ?",
@@ -492,6 +524,83 @@ def first_seen(chat_id: int, user_id: int) -> Optional[int]:
         "SELECT first_seen_at FROM user_seen WHERE chat_id=? AND user_id=?", (chat_id, user_id)
     ).fetchone()
     return int(row["first_seen_at"]) if row else None
+
+
+# ---------------------------------------------------------------- 消息抽奖
+
+EXCERPT_LEN = 120
+
+
+@dataclass
+class ChatMessage:
+    message_id: int
+    user_id: int
+    username: Optional[str]
+    full_name: str
+    excerpt: str
+
+
+def record_message(
+    giveaway_id: int,
+    message_id: int,
+    user_id: int,
+    username: Optional[str],
+    full_name: str,
+    text: str,
+) -> None:
+    _exec(
+        "INSERT OR IGNORE INTO messages "
+        "(giveaway_id, message_id, user_id, username, full_name, excerpt, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (giveaway_id, message_id, user_id, username, full_name,
+         (text or "")[:EXCERPT_LEN], now()),
+    )
+
+
+def messages(giveaway_id: int) -> list[ChatMessage]:
+    rows = conn().execute(
+        "SELECT message_id, user_id, username, full_name, excerpt FROM messages "
+        "WHERE giveaway_id=? ORDER BY message_id",
+        (giveaway_id,),
+    ).fetchall()
+    return [
+        ChatMessage(r["message_id"], r["user_id"], r["username"],
+                    r["full_name"] or "", r["excerpt"] or "")
+        for r in rows
+    ]
+
+
+def message_count(giveaway_id: int) -> int:
+    row = conn().execute(
+        "SELECT COUNT(*) AS c FROM messages WHERE giveaway_id=?", (giveaway_id,)
+    ).fetchone()
+    return int(row["c"])
+
+
+# ---------------------------------------------------------------- 邀请链接
+
+def save_invite_link(chat_id: int, user_id: int, link: str) -> None:
+    _exec(
+        "INSERT OR REPLACE INTO invite_links (invite_link, chat_id, user_id, created_at) "
+        "VALUES (?,?,?,?)",
+        (link, chat_id, user_id, now()),
+    )
+
+
+def invite_link_owner(link: str) -> Optional[int]:
+    row = conn().execute(
+        "SELECT user_id FROM invite_links WHERE invite_link=?", (link,)
+    ).fetchone()
+    return int(row["user_id"]) if row else None
+
+
+def existing_invite_link(chat_id: int, user_id: int) -> Optional[str]:
+    row = conn().execute(
+        "SELECT invite_link FROM invite_links WHERE chat_id=? AND user_id=? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (chat_id, user_id),
+    ).fetchone()
+    return row["invite_link"] if row else None
 
 
 # ---------------------------------------------------------------- 预留名额

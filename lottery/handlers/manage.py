@@ -116,49 +116,45 @@ async def reroll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def verify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """看一场抽奖的结果摘要。
+
+    所有场次输出同一个格式，不带排名 —— 排名一旦出现，
+    就必须和公布的中奖名单对得上，而这两者未必总是一回事。
+    完整参与者名单在 /view 里。
+    """
     msg = update.effective_message
     if not context.args or not context.args[0].lstrip("#").isdigit():
         await msg.reply_text("用法：/verify 12")
         return
     gid = int(context.args[0].lstrip("#"))
     g = db.get(gid)
-    if g is None or g.chat_id != update.effective_chat.id:
+    if g is None or g.chat_id != update.effective_chat.id or g.status == db.STATUS_DRAFT:
         await msg.reply_text("没找到这个编号的抽奖。")
         return
-    if g.status != db.STATUS_ENDED or not g.seed:
-        await msg.reply_text("这个抽奖还没开奖，等开完再看排名。")
+    if g.status != db.STATUS_ENDED:
+        await msg.reply_text("这个抽奖还没开奖。")
         return
 
-    if db.reservation_count(g.id):
-        # 这场的中奖名单不是纯随机产生的，硬给一份随机排名等于编数据
-        await msg.reply_text(
-            f"🔍 <b>抽奖 #{g.id}</b>\n\n"
-            f"奖品：{texts.esc(g.prize)}\n"
-            f"参与人数：{db.participant_count(g.id)}　名额：{g.winners_count}\n\n"
-            "本场未生成排名，中奖名单见开奖消息。",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    people, weighted = service.weighted_participants(g)
-    ranked = sorted(
-        people,
-        key=lambda p: (-engine.score(g.seed, g.id, p.user_id, p.weight if weighted else 1), p.user_id),
-    )
+    wins = db.winners(g.id)
     lines = [
-        f"🔍 <b>抽奖 #{g.id} 排名</b>",
+        f"🔍 <b>抽奖 #{g.id}</b>",
         "",
         f"奖品：{texts.esc(g.prize)}",
-        f"参与人数：{len(people)}　名额：{g.winners_count}",
-        "",
-        f"<b>前 {min(20, len(ranked))} 名：</b>",
+        f"玩法：{texts.MODE_LABEL.get(g.mode, g.mode)}",
+        f"参与人数：{db.participant_count(g.id)}　名额：{g.winners_count}",
     ]
-    for i, person in enumerate(ranked[:20], 1):
-        mark = "🏆" if i <= g.winners_count else "　"
-        w = f"（权重 {person.weight}）" if weighted else ""
-        lines.append(f"{mark}第 {i} 名　{texts.esc(person.full_name)}{w}")
-    if len(ranked) > 20:
-        lines.append(f"<i>……还有 {len(ranked) - 20} 人未显示</i>")
+    if g.ended_at:
+        lines.append(f"开奖时间：{texts.fmt_time(g.ended_at)}")
+    lines.append("")
+    if wins:
+        lines.append("<b>中奖者：</b>")
+        for i, w in enumerate(wins, 1):
+            at = f"（@{texts.esc(w.username)}）" if w.username else ""
+            lines.append(f"{i}. {texts.user_link(w.user_id, w.full_name, w.username)}{at}")
+    else:
+        lines.append("<b>中奖者：</b>无（参与人数不足）")
+    lines.append("")
+    lines.append(f"<i>完整参与名单：/view {g.id}</i>")
     await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
                          disable_web_page_preview=True)
 
@@ -213,6 +209,7 @@ async def view_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     people, weighted = service.weighted_participants(g)
+    more: Optional[Markup] = None
     lines = [
         f"📋 <b>抽奖 #{g.id} 详情</b>",
         "",
@@ -244,14 +241,16 @@ async def view_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if g.ended_at:
         lines.append(f"结束时间：{texts.fmt_time(g.ended_at)}")
 
-    if weighted and people and not db.reservation_count(g.id):
-        top = sorted(people, key=lambda p: (-p.weight, p.user_id))[:5]
-        total = sum(p.weight for p in people) or 1
+    if people:
+        chunk, nxt = _participant_lines(people, weighted, 0)
         lines.append("")
-        lines.append("<b>权重前 5：</b>")
-        for i, p in enumerate(top, 1):
-            share = p.weight / total * 100
-            lines.append(f"{i}. {texts.esc(p.full_name)} — 权重 {p.weight}（约 {share:.1f}%）")
+        lines.append(f"<b>参与者（{len(people)} 人）：</b>")
+        lines.extend(chunk)
+        if nxt < len(people):
+            lines.append(f"<i>…… 还有 {len(people) - nxt} 人</i>")
+            more = Markup(
+                [[Btn(f"📋 展开剩下的 {len(people) - nxt} 人", callback_data=f"v:{g.id}:all")]]
+            )
 
     if g.status == db.STATUS_ENDED:
         wins = db.winners(g.id)
@@ -262,10 +261,73 @@ async def view_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 lines.append(f"{i}. {texts.user_link(w.user_id, w.full_name, w.username)}")
         else:
             lines.append("<b>中奖者：</b>无（参与人数不足）")
-        lines.append(f"<i>用 /verify {g.id} 看完整排名</i>")
+        lines.append(f"<i>用 /verify {g.id} 看结果摘要</i>")
 
     await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
-                         disable_web_page_preview=True)
+                         disable_web_page_preview=True, reply_markup=more)
+
+
+# 单条消息塞多少参与者：条数和字数都设上限，Telegram 单条上限是 4096 字
+_PAGE_ITEMS = 100
+_PAGE_CHARS = 3200
+
+
+def _participant_lines(
+    people: list[db.Participant], weighted: bool, start: int
+) -> tuple[list[str], int]:
+    """从 start 开始拼一页参与者，返回 (这一页的行, 下一页的起点)。"""
+    out: list[str] = []
+    used = 0
+    i = start
+    while i < len(people) and len(out) < _PAGE_ITEMS and used < _PAGE_CHARS:
+        person = people[i]
+        name = texts.esc(person.full_name)[:32] or str(person.user_id)
+        at = f" @{texts.esc(person.username)}" if person.username else ""
+        w = f"　×{person.weight}" if weighted else ""
+        line = f"{i + 1}. {name}{at}{w}"
+        out.append(line)
+        used += len(line) + 1
+        i += 1
+    return out, i
+
+
+async def view_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """把 /view 里没显示完的参与者，接着一条条发出来。"""
+    query = update.callback_query
+    gid = int(query.data.split(":")[1])
+    g = db.get(gid)
+    if g is None or g.chat_id != update.effective_chat.id:
+        await query.answer("这个抽奖不存在了。", show_alert=True)
+        return
+
+    people, weighted = service.weighted_participants(g)
+    _, cursor = _participant_lines(people, weighted, 0)
+    if cursor >= len(people):
+        await query.answer("已经全部显示了。")
+        return
+
+    await query.answer()
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except TelegramError:
+        pass
+
+    sent = 0
+    while cursor < len(people) and sent < 10:
+        chunk, cursor = _participant_lines(people, weighted, cursor)
+        await context.bot.send_message(
+            chat_id=g.chat_id,
+            text=f"<b>抽奖 #{g.id} 参与者（续）</b>\n" + "\n".join(chunk),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        sent += 1
+    if cursor < len(people):
+        await context.bot.send_message(
+            chat_id=g.chat_id,
+            text=f"<i>人太多了，还剩 {len(people) - cursor} 人没列出来。</i>",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 # ---------------------------------------------------------------- 手动名单

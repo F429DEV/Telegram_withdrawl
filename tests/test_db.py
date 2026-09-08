@@ -228,3 +228,39 @@ class TestReservationStore(unittest.TestCase):
         self.assertEqual(found.user_id, 42)
         self.assertIsNone(db.find_user_by_username(-100, "@nobody"))
         self.assertIsNone(db.find_user_by_username(-999, "@zhangsan"), "跨群不该查到")
+
+
+class TestMessagesAndInviteLinks(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        db.init(Path(self.tmp.name) / "m.db")
+        self.gid = db.create_draft(-100, 1, {"prize": "x", "mode": db.MODE_MESSAGE})
+
+    def tearDown(self):
+        db.conn().close()
+        db._conn = None
+        self.tmp.cleanup()
+
+    def test_record_message(self):
+        db.record_message(self.gid, 1001, 7, "u7", "张三", "早上好")
+        db.record_message(self.gid, 1002, 7, "u7", "张三", "在吗")
+        self.assertEqual(db.message_count(self.gid), 2)
+        rows = db.messages(self.gid)
+        self.assertEqual(rows[0].excerpt, "早上好")
+        self.assertEqual(rows[0].user_id, 7)
+
+    def test_same_message_id_not_double_counted(self):
+        db.record_message(self.gid, 1001, 7, "u7", "张三", "早上好")
+        db.record_message(self.gid, 1001, 7, "u7", "张三", "早上好")
+        self.assertEqual(db.message_count(self.gid), 1)
+
+    def test_excerpt_truncated(self):
+        db.record_message(self.gid, 1, 7, None, "张三", "长" * 500)
+        self.assertEqual(len(db.messages(self.gid)[0].excerpt), db.EXCERPT_LEN)
+
+    def test_invite_link_roundtrip(self):
+        db.save_invite_link(-100, 7, "https://t.me/+abc")
+        self.assertEqual(db.invite_link_owner("https://t.me/+abc"), 7)
+        self.assertEqual(db.existing_invite_link(-100, 7), "https://t.me/+abc")
+        self.assertIsNone(db.invite_link_owner("https://t.me/+nope"))
+        self.assertIsNone(db.existing_invite_link(-100, 999))

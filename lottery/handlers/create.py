@@ -16,7 +16,7 @@ from .. import db, eligibility, keyboards, service, texts
 log = logging.getLogger(__name__)
 
 # 面板里可选的玩法（手动名单走 /pick，不进面板）
-PANEL_MODES = [db.MODE_BUTTON, db.MODE_KEYWORD, db.MODE_POINTS]
+PANEL_MODES = [db.MODE_BUTTON, db.MODE_KEYWORD, db.MODE_POINTS, db.MODE_MESSAGE]
 
 _DURATION_RE = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$", re.I)
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "": 60}

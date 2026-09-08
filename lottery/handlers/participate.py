@@ -5,11 +5,19 @@ from __future__ import annotations
 import logging
 
 from telegram import Update
-from telegram.constants import ParseMode
+from telegram.constants import ChatMemberStatus, ChatType, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from .. import db, eligibility, service, texts
+
+# 算「在群里」的几种状态
+_IN_GROUP = {
+    ChatMemberStatus.MEMBER,
+    ChatMemberStatus.ADMINISTRATOR,
+    ChatMemberStatus.OWNER,
+    ChatMemberStatus.RESTRICTED,
+}
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +61,7 @@ async def join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         wins = db.winners(g.id)
         names = "\n".join(f"{i}. {w.full_name}" for i, w in enumerate(wins, 1)) or "无"
         await query.answer(
-            f"中奖：\n{names}\n\n群里发 /verify {g.id} 看完整排名。",
+            f"中奖：\n{names}\n\n群里发 /verify {g.id} 看结果。",
             show_alert=True,
         )
         return
@@ -95,23 +103,60 @@ async def join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ---------------------------------------------------------------- 群消息
 
-async def on_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """有人进群：记一笔「谁拉的谁」，给邀请加成用。"""
-    msg = update.effective_message
-    if not msg or not msg.new_chat_members:
+async def invite_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/invite —— 机器人给你生成一条专属邀请链接，别人从这条链接进群就算你邀请的。"""
+    chat, user, msg = update.effective_chat, update.effective_user, update.effective_message
+    if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await msg.reply_text("这个命令要在群里用。")
         return
-    inviter = msg.from_user
-    if inviter is None:
+
+    link = db.existing_invite_link(chat.id, user.id)
+    if link is None:
+        try:
+            created = await context.bot.create_chat_invite_link(
+                chat.id, name=f"ref-{user.id}"[:32]
+            )
+        except TelegramError as exc:
+            log.warning("群 %s 生成邀请链接失败: %s", chat.id, exc)
+            await msg.reply_text(
+                "生成失败：我需要「邀请用户」这项管理员权限才能发专属链接，"
+                "让群主到管理员设置里勾上。"
+            )
+            return
+        link = created.invite_link
+        db.save_invite_link(chat.id, user.id, link)
+
+    invited = db.invite_count(chat.id, user.id)
+    await msg.reply_text(
+        f"🔗 <b>你的专属邀请链接</b>\n\n"
+        f"<code>{texts.esc(link)}</code>\n\n"
+        f"别人从这条链接进群就算你邀请的。你目前已邀请 <b>{invited}</b> 人。\n"
+        f"<i>开了邀请加成的抽奖，每邀 1 人权重就 +N，用 /viewmyinfo 看自己当前的权重。</i>",
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
+async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """成员状态变化：只关心「通过某条专属邀请链接进了群」。"""
+    cmu = update.chat_member
+    if cmu is None:
         return
-    chat_id = update.effective_chat.id
-    for member in msg.new_chat_members:
-        if member.is_bot:
-            continue
-        # 自己通过邀请链接进群时，from_user 就是他本人 —— 这不算邀请
-        if member.id == inviter.id:
-            continue
-        if db.record_invite(chat_id, member.id, inviter.id):
-            log.info("群 %s：%s 邀请了 %s", chat_id, inviter.id, member.id)
+    was_in = cmu.old_chat_member.status in _IN_GROUP
+    now_in = cmu.new_chat_member.status in _IN_GROUP
+    if was_in or not now_in:
+        return
+    link = cmu.invite_link
+    if link is None:
+        return
+    inviter_id = db.invite_link_owner(link.invite_link)
+    if inviter_id is None:
+        return
+    joined = cmu.new_chat_member.user
+    if joined.is_bot:
+        return
+    if db.record_invite(cmu.chat.id, joined.id, inviter_id):
+        log.info("群 %s：%s 通过专属链接邀请了 %s", cmu.chat.id, inviter_id, joined.id)
 
 
 async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -156,6 +201,22 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             g = db.get(g.id)
             if not await service.maybe_finish_by_cap(context.bot, context.application, g):
                 await service.refresh_card(context.bot, g)
+
+    # 消息抽奖：每条消息都记下来，开奖时随机抽一条
+    for g in db.active_by_mode(chat.id, db.MODE_MESSAGE):
+        if not db.is_participant(g.id, user.id):
+            ok, _ = await eligibility.check(context.bot, g, user)
+            if not ok:
+                continue
+            db.add_participant(g.id, user.id, user.username, user.full_name)
+        else:
+            db.bump_weight(g.id, user.id)
+        db.record_message(
+            g.id, msg.message_id, user.id, user.username, user.full_name, text
+        )
+        fresh = db.get(g.id)
+        if not await service.maybe_finish_by_cap(context.bot, context.application, fresh):
+            await service.refresh_card(context.bot, fresh)
 
     # 发言积分
     for g in db.active_points_giveaways(chat.id):

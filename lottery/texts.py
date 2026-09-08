@@ -14,6 +14,7 @@ MODE_LABEL = {
     db.MODE_BUTTON: "点按钮报名",
     db.MODE_KEYWORD: "发口令报名",
     db.MODE_POINTS: "发言积分（说得越多机会越大）",
+    db.MODE_MESSAGE: "消息抽奖（随机抽一条群消息，作者中奖）",
     db.MODE_MANUAL: "管理员贴名单",
 }
 
@@ -21,6 +22,7 @@ MODE_SHORT = {
     db.MODE_BUTTON: "按钮",
     db.MODE_KEYWORD: "口令",
     db.MODE_POINTS: "积分",
+    db.MODE_MESSAGE: "消息",
     db.MODE_MANUAL: "名单",
 }
 
@@ -58,6 +60,14 @@ def fmt_duration(seconds: int) -> str:
         return f"{hours} 小时 {minutes} 分钟" if minutes else f"{hours} 小时"
     days, hours = divmod(hours, 24)
     return f"{days} 天 {hours} 小时" if hours else f"{days} 天"
+
+
+def message_link(chat_id: int, message_id: int) -> Optional[str]:
+    """超级群的消息深链：-1001234567890 -> https://t.me/c/1234567890/<mid>"""
+    raw = str(chat_id)
+    if not raw.startswith("-100"):
+        return None
+    return f"https://t.me/c/{raw[4:]}/{message_id}"
 
 
 def user_link(user_id: int, full_name: str, username: Optional[str] = None) -> str:
@@ -108,6 +118,9 @@ def card(g: db.Giveaway, count: int) -> str:
             parts.append(f"🔑 {words}")
     elif g.mode == db.MODE_POINTS:
         parts.append("参与方式：在本群正常发言即自动参与，发言越多中奖权重越高（不设上限）")
+    elif g.mode == db.MODE_MESSAGE:
+        parts.append("参与方式：在本群正常聊天即可，开奖时随机抽一条消息，发这条的人中奖")
+        parts.append("说得越多，被抽中的机会越大")
     parts.append(f"🏆 名额：{g.winners_count} 名")
     if g.invite_weight:
         parts.append(f"👥 每邀请 1 位新成员进群，中奖权重 +{g.invite_weight}")
@@ -119,7 +132,13 @@ def card(g: db.Giveaway, count: int) -> str:
     return "\n".join(parts)
 
 
-def result(g: db.Giveaway, wins: list[db.Participant], total: int) -> str:
+def result(
+    g: db.Giveaway,
+    wins: list[db.Participant],
+    total: int,
+    quotes: Optional[dict] = None,
+    chat_id: Optional[int] = None,
+) -> str:
     prize = esc(g.prize) or "（未填写奖品）"
     if not wins:
         return (
@@ -127,12 +146,23 @@ def result(g: db.Giveaway, wins: list[db.Participant], total: int) -> str:
             f"😶 参与人数不足，本次没有产生中奖者。\n"
             f"<i>编号 #{g.id}</i>"
         )
-    lines = [f"🎉 <b>开奖：{prize}</b>", "", f"共 {total} 人参与，抽出 {len(wins)} 位："]
+    quotes = quotes or {}
+    if g.mode == db.MODE_MESSAGE:
+        head = f"共 {total} 人参与，随机抽中这 {len(wins)} 条消息："
+    else:
+        head = f"共 {total} 人参与，抽出 {len(wins)} 位："
+    lines = [f"🎉 <b>开奖：{prize}</b>", "", head]
     for i, w in enumerate(wins, 1):
         at = f"（@{esc(w.username)}）" if w.username else ""
         lines.append(f"{i}. {user_link(w.user_id, w.full_name, w.username)} {at}")
+        quoted = quotes.get(w.user_id)
+        if quoted is not None:
+            excerpt = esc(quoted.excerpt).strip() or "（非文字消息）"
+            link = message_link(chat_id, quoted.message_id) if chat_id else None
+            tail = f' <a href="{link}">跳转</a>' if link else ""
+            lines.append(f"　　💬 <i>{excerpt}</i>{tail}")
     lines.append("")
-    lines.append(f"<i>编号 #{g.id}　用 /verify {g.id} 看完整排名</i>")
+    lines.append(f"<i>编号 #{g.id}　用 /verify {g.id} 看结果</i>")
     return "\n".join(lines)
 
 
@@ -219,17 +249,20 @@ HELP = (
     "<b>群设置</b>\n"
     "/settings — 谁能发起抽奖、默认要求加入哪些频道\n\n"
     "<b>谁都能用</b>\n"
+    "/invite — 拿到自己的专属邀请链接，别人从这条链接进群就算你邀请的\n"
     "/viewmyinfo — 看自己的 Telegram 用户 ID、当前群 ID，\n"
     "　以及自己在本群的发言数、邀请人数、正在参与的抽奖和权重\n\n"
     "<b>玩法说明</b>\n"
     "• 按钮：发一条带按钮的消息，点一下就报名\n"
     "• 口令：在群里发指定口令即报名；可以一次设多个口令，发中任意一个都算\n"
     "• 积分：抽奖期间正常聊天自动参与，发言越多权重越高，不设上限\n"
+    "• 消息：抽奖期间正常聊天，开奖时随机抽一条消息，发这条的人中奖\n"
     "• 名单：管理员贴一份名单，直接抽\n\n"
     "<b>邀请加成</b>\n"
-    "创建时点「👥 邀请加成」，每把 1 个人拉进群，中奖权重就 +N。\n"
-    "只算本场抽奖开始之后拉进来的人，同一个人只算一次（踢出再拉回来不重复计）。\n"
-    "自己通过邀请链接进群不算别人邀请的。\n\n"
+    "创建时点「👥 邀请加成」，每邀请 1 个人进群，中奖权重就 +N。\n"
+    "参与者先发 /invite 拿到自己的专属邀请链接，别人从这条链接进群才算数。\n"
+    "只算本场抽奖开始之后进来的人，同一个人只算一次（退群再进不重复计）。\n"
+    "机器人需要「邀请用户」权限才能生成链接。\n\n"
     "开奖用加权随机：没开加成时人人机会均等，开了积分或邀请加成的，"
     "权重越高中奖概率越大。"
 )

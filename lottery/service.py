@@ -116,6 +116,37 @@ async def refresh_card(bot: Bot, g: db.Giveaway, force: bool = False) -> None:
         log.warning("刷新抽奖 #%s 卡片失败: %s", g.id, exc)
 
 
+# ---------------------------------------------------------------- 消息抽奖
+
+def _draw_by_message(
+    g: db.Giveaway, pool: list[db.Participant], count: int, seed: str
+) -> tuple[list[db.Participant], dict[int, db.ChatMessage]]:
+    """从抽奖期间的所有群消息里随机抽，消息的作者中奖。
+
+    等价于「按发言条数加权抽人」，但能把中奖的那条消息原样引出来。
+    一个人被抽中后，他其余的消息不再参与，避免同一个人占两个名额。
+    """
+    if count <= 0:
+        return [], {}
+    allowed = {p.user_id: p for p in pool}
+    rows = [m for m in db.messages(g.id) if m.user_id in allowed]
+    if not rows:
+        return [], {}
+
+    winners: list[db.Participant] = []
+    quotes: dict[int, db.ChatMessage] = {}
+    taken: set[int] = set()
+    for row in engine.shuffle(rows, seed, g.id, key=lambda m: m.message_id):
+        if row.user_id in taken:
+            continue
+        taken.add(row.user_id)
+        winners.append(allowed[row.user_id])
+        quotes[row.user_id] = row
+        if len(winners) >= count:
+            break
+    return winners, quotes
+
+
 # ---------------------------------------------------------------- 权重
 
 def weighted_participants(g: db.Giveaway) -> tuple[list[db.Participant], bool]:
@@ -151,7 +182,12 @@ async def finish(bot: Bot, giveaway_id: int, *, reason: str = "") -> bool:
 
     seed = engine.new_seed()
     remaining = max(0, g.winners_count - len(reserved))
-    wins = reserved + engine.draw(pool, remaining, seed, g.id, weighted=weighted)
+    if g.mode == db.MODE_MESSAGE:
+        picked, quotes = _draw_by_message(g, pool, remaining, seed)
+        wins = reserved + picked
+    else:
+        quotes = {}
+        wins = reserved + engine.draw(pool, remaining, seed, g.id, weighted=weighted)
     db.update(g.id, status=db.STATUS_ENDED, ended_at=db.now(), seed=seed)
     db.save_winners(g.id, wins)
     g = db.get(g.id)
@@ -174,7 +210,7 @@ async def finish(bot: Bot, giveaway_id: int, *, reason: str = "") -> bool:
             else:
                 log.warning("收尾编辑抽奖 #%s 失败: %s", g.id, exc)
 
-    text = texts.result(g, wins, len(ok))
+    text = texts.result(g, wins, len(ok), quotes=quotes, chat_id=g.chat_id)
     if rejected:
         text += f"\n<i>（{len(rejected)} 人因不满足门槛被剔除）</i>"
     if reason:
