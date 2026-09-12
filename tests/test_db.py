@@ -264,3 +264,46 @@ class TestMessagesAndInviteLinks(unittest.TestCase):
         self.assertEqual(db.existing_invite_link(-100, 7), "https://t.me/+abc")
         self.assertIsNone(db.invite_link_owner("https://t.me/+nope"))
         self.assertIsNone(db.existing_invite_link(-100, 999))
+
+
+class TestWinHistory(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        db.init(Path(self.tmp.name) / "w.db")
+
+    def tearDown(self):
+        db.conn().close()
+        db._conn = None
+        self.tmp.cleanup()
+
+    def _ended(self, chat_id, prize, ended_at, winner_id):
+        gid = db.create_draft(chat_id, 1, {"prize": prize})
+        db.update(gid, status=db.STATUS_ENDED, ended_at=ended_at)
+        db.add_participant(gid, winner_id, None, "中奖的")
+        db.save_winners(gid, db.participants(gid))
+        return gid
+
+    def test_empty(self):
+        records, total = db.wins_for_user(7)
+        self.assertEqual((records, total), ([], 0))
+
+    def test_scoped_and_sorted(self):
+        self._ended(-100, "旧奖", 1000, 7)
+        newest = self._ended(-100, "新奖", 9000, 7)
+        self._ended(-200, "别群的", 5000, 7)
+        self._ended(-100, "别人的", 8000, 8)
+
+        records, total = db.wins_for_user(7, -100)
+        self.assertEqual(total, 2, "只数本群的")
+        self.assertEqual(records[0].giveaway_id, newest, "最近的排最前")
+        self.assertEqual([r.prize for r in records], ["新奖", "旧奖"])
+
+        records, total = db.wins_for_user(7)
+        self.assertEqual(total, 3, "不限群时把所有群的都算上")
+
+    def test_limit(self):
+        for i in range(8):
+            self._ended(-100, f"奖{i}", 1000 + i, 7)
+        records, total = db.wins_for_user(7, -100, limit=5)
+        self.assertEqual(total, 8)
+        self.assertEqual(len(records), 5)

@@ -481,6 +481,43 @@ def save_winners(giveaway_id: int, winners: list[Participant]) -> None:
     conn().commit()
 
 
+@dataclass
+class WinRecord:
+    giveaway_id: int
+    chat_id: int
+    prize: str
+    ended_at: Optional[int]
+
+
+def wins_for_user(
+    user_id: int, chat_id: Optional[int] = None, limit: int = 10
+) -> tuple[list[WinRecord], int]:
+    """某人的中奖记录。chat_id 给了就只查那个群。返回 (最近若干条, 总次数)。"""
+    where = "w.user_id=?"
+    params: list[Any] = [user_id]
+    if chat_id is not None:
+        where += " AND g.chat_id=?"
+        params.append(chat_id)
+
+    total = int(conn().execute(
+        f"SELECT COUNT(*) AS c FROM winners w JOIN giveaways g ON g.id=w.giveaway_id "
+        f"WHERE {where}",
+        tuple(params),
+    ).fetchone()["c"])
+
+    rows = conn().execute(
+        f"""SELECT g.id, g.chat_id, g.prize, g.ended_at
+            FROM winners w JOIN giveaways g ON g.id = w.giveaway_id
+            WHERE {where}
+            ORDER BY COALESCE(g.ended_at, 0) DESC, g.id DESC
+            LIMIT ?""",
+        tuple(params) + (limit,),
+    ).fetchall()
+    return [
+        WinRecord(r["id"], r["chat_id"], r["prize"] or "", r["ended_at"]) for r in rows
+    ], total
+
+
 def winners(giveaway_id: int) -> list[Participant]:
     rows = conn().execute(
         "SELECT user_id, username, full_name FROM winners WHERE giveaway_id=? ORDER BY rank",

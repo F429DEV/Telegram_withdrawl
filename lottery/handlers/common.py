@@ -2,19 +2,47 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from telegram import Update
 from telegram.constants import ChatType, ParseMode
+from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from .. import db, service, texts
+from . import participate
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    if chat.type == ChatType.PRIVATE:
-        await update.message.reply_text(texts.START_PRIVATE)
-    else:
+    if chat.type != ChatType.PRIVATE:
         await update.message.reply_text("我在。群管理员发 /new 就能开抽奖，/help 看说明。")
+        return
+
+    # 从群里「点我私聊」过来的：直接把那个群的专属邀请链接发给他
+    payload = (context.args or [""])[0]
+    if payload.startswith("inv_"):
+        raw = payload[4:]
+        try:
+            group_id = int(raw)
+        except ValueError:
+            group_id = None
+        if group_id is not None:
+            title = ""
+            try:
+                title = (await context.bot.get_chat(group_id)).title or ""
+            except TelegramError:
+                pass
+            if await participate.send_invite_dm(
+                context.bot, group_id, update.effective_user.id, title
+            ):
+                return
+            await update.message.reply_text(
+                "没能生成邀请链接 —— 我在那个群里可能没有「邀请用户」权限。"
+            )
+            return
+
+    await update.message.reply_text(texts.START_PRIVATE)
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -31,6 +59,21 @@ _CHAT_TYPE_LABEL = {
 }
 
 
+def _win_history(user_id: int, chat_id: Optional[int]) -> list[str]:
+    """历史中奖记录。chat_id 为 None 时查所有群。"""
+    records, total = db.wins_for_user(user_id, chat_id, limit=5)
+    if not total:
+        return ["", "🏆 <b>历史中奖</b>", "还没中过奖，继续参与 🍀"]
+    scope = "本群" if chat_id is not None else "全部"
+    out = ["", f"🏆 <b>历史中奖</b>（{scope}共 {total} 次）"]
+    for r in records:
+        when = texts.fmt_time(r.ended_at) if r.ended_at else "时间不详"
+        out.append(f"• #{r.giveaway_id}「{texts.esc(r.prize) or '未填奖品'}」{when}")
+    if total > len(records):
+        out.append(f"<i>…… 还有 {total - len(records)} 次没列出</i>")
+    return out
+
+
 async def viewmyinfo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """报出自己的 Telegram ID，以及在本群的记录。"""
     user, chat, msg = update.effective_user, update.effective_chat, update.effective_message
@@ -44,6 +87,7 @@ async def viewmyinfo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     ]
 
     if chat.type == ChatType.PRIVATE:
+        lines += _win_history(user.id, None)
         lines += [
             "",
             "<i>把这个命令发在群里，还能看到群 ID 和你在那个群的记录。</i>",
@@ -92,6 +136,8 @@ async def viewmyinfo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if mine:
         lines += ["", "🎁 <b>你正在参与</b>"]
         lines += [f"• {item}" for item in mine]
+
+    lines += _win_history(user.id, chat.id)
 
     await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
                          disable_web_page_preview=True)

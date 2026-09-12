@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from telegram import Update
 from telegram.constants import ChatMemberStatus, ChatType, ParseMode
@@ -103,38 +104,85 @@ async def join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ---------------------------------------------------------------- 群消息
 
+async def _ensure_link(bot, chat_id: int, user_id: int) -> Optional[str]:
+    """拿到（必要时生成）某人在某群的专属邀请链接。生成不了返回 None。"""
+    link = db.existing_invite_link(chat_id, user_id)
+    if link:
+        return link
+    try:
+        created = await bot.create_chat_invite_link(chat_id, name=f"ref-{user_id}"[:32])
+    except TelegramError as exc:
+        log.warning("群 %s 生成邀请链接失败: %s", chat_id, exc)
+        return None
+    db.save_invite_link(chat_id, user_id, created.invite_link)
+    return created.invite_link
+
+
+async def send_invite_dm(bot, chat_id: int, user_id: int, chat_title: str = "") -> bool:
+    """把专属链接私发给本人。对方没和机器人私聊过的话会失败，返回 False。"""
+    link = await _ensure_link(bot, chat_id, user_id)
+    if link is None:
+        return False
+    invited = db.invite_count(chat_id, user_id)
+    where = f"「{texts.esc(chat_title)}」" if chat_title else " 那个群 "
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                f"🔗 <b>你在{where}的专属邀请链接</b>\n\n"
+                f"{texts.esc(link)}\n\n"
+                f"把它发给朋友，谁从这条链接进群就算你邀请的。\n"
+                f"你目前已邀请 <b>{invited}</b> 人。\n\n"
+                f"<i>开了邀请加成的抽奖，每邀 1 人中奖权重就 +N，"
+                f"在群里发 /viewmyinfo 看自己当前的权重。</i>"
+            ),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return True
+    except TelegramError as exc:
+        log.info("给 %s 私发邀请链接失败（多半是没私聊过机器人）: %s", user_id, exc)
+        return False
+
+
 async def invite_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/invite —— 机器人给你生成一条专属邀请链接，别人从这条链接进群就算你邀请的。"""
+    """/invite —— 在群里发，机器人把专属邀请链接私信给你。
+
+    链接不发在群里：一来避免刷屏，二来贴在群里的链接谁都能复制走，
+    别人用它拉人就变成给发链接的人刷邀请数了。
+    """
     chat, user, msg = update.effective_chat, update.effective_user, update.effective_message
+
+    if chat.type == ChatType.PRIVATE:
+        await msg.reply_text(
+            "请到群里发 /invite，我会把那个群的专属链接私信给你。"
+        )
+        return
     if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
-        await msg.reply_text("这个命令要在群里用。")
         return
 
-    link = db.existing_invite_link(chat.id, user.id)
-    if link is None:
-        try:
-            created = await context.bot.create_chat_invite_link(
-                chat.id, name=f"ref-{user.id}"[:32]
-            )
-        except TelegramError as exc:
-            log.warning("群 %s 生成邀请链接失败: %s", chat.id, exc)
-            await msg.reply_text(
-                "生成失败：我需要「邀请用户」这项管理员权限才能发专属链接，"
-                "让群主到管理员设置里勾上。"
-            )
-            return
-        link = created.invite_link
-        db.save_invite_link(chat.id, user.id, link)
+    if await send_invite_dm(context.bot, chat.id, user.id, chat.title or ""):
+        tip = await msg.reply_text("🔗 已经私信发给你了，去看看私聊。")
+        _schedule_delete(context, chat.id, tip.message_id)
+        return
 
-    invited = db.invite_count(chat.id, user.id)
-    await msg.reply_text(
-        f"🔗 <b>你的专属邀请链接</b>\n\n"
-        f"<code>{texts.esc(link)}</code>\n\n"
-        f"别人从这条链接进群就算你邀请的。你目前已邀请 <b>{invited}</b> 人。\n"
-        f"<i>开了邀请加成的抽奖，每邀 1 人权重就 +N，用 /viewmyinfo 看自己当前的权重。</i>",
-        parse_mode=ParseMode.HTML,
+    # 私发不出去：要么没权限生成链接，要么对方没先私聊过机器人
+    if db.existing_invite_link(chat.id, user.id) is None and \
+            await _ensure_link(context.bot, chat.id, user.id) is None:
+        await msg.reply_text(
+            "生成失败：我需要「邀请用户」这项管理员权限才能发专属链接，"
+            "让群主到管理员设置里勾上。"
+        )
+        return
+
+    me = await context.bot.get_me()
+    deep_link = f"https://t.me/{me.username}?start=inv_{chat.id}"
+    tip = await msg.reply_text(
+        f"我私信不了你 —— Telegram 不允许机器人主动私聊没说过话的人。\n"
+        f"点这里跟我说句话，链接会自动发给你：{deep_link}",
         disable_web_page_preview=True,
     )
+    _schedule_delete(context, chat.id, tip.message_id, delay=30)
 
 
 async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
