@@ -23,23 +23,6 @@ _IN_GROUP = {
 log = logging.getLogger(__name__)
 
 
-async def _delete_later(context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = context.job.data
-    try:
-        await context.bot.delete_message(data["chat_id"], data["message_id"])
-    except TelegramError:
-        pass
-
-
-def _schedule_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int,
-                     delay: int = 8) -> None:
-    if context.application.job_queue is None:
-        return
-    context.application.job_queue.run_once(
-        _delete_later, when=delay, data={"chat_id": chat_id, "message_id": message_id}
-    )
-
-
 # ---------------------------------------------------------------- 按钮
 
 async def join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -162,8 +145,7 @@ async def invite_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if await send_invite_dm(context.bot, chat.id, user.id, chat.title or ""):
-        tip = await msg.reply_text("🔗 已经私信发给你了，去看看私聊。")
-        _schedule_delete(context, chat.id, tip.message_id)
+        await msg.reply_text("🔗 已经私信发给你了，去看看私聊。")
         return
 
     # 私发不出去：要么没权限生成链接，要么对方没先私聊过机器人
@@ -177,12 +159,11 @@ async def invite_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     me = await context.bot.get_me()
     deep_link = f"https://t.me/{me.username}?start=inv_{chat.id}"
-    tip = await msg.reply_text(
+    await msg.reply_text(
         f"我私信不了你 —— Telegram 不允许机器人主动私聊没说过话的人。\n"
         f"点这里跟我说句话，链接会自动发给你：{deep_link}",
         disable_web_page_preview=True,
     )
-    _schedule_delete(context, chat.id, tip.message_id, delay=30)
 
 
 async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -236,16 +217,14 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 continue
             ok, reason = await eligibility.check(context.bot, g, user)
             if not ok:
-                tip = await msg.reply_text(f"@{user.username or user.full_name} {reason}")
-                _schedule_delete(context, chat.id, tip.message_id)
+                await msg.reply_text(f"@{user.username or user.full_name} {reason}")
                 continue
             db.add_participant(g.id, user.id, user.username, user.full_name)
             count = db.participant_count(g.id)
-            tip = await msg.reply_text(
+            await msg.reply_text(
                 f"✅ 已记下，你是第 {count} 位参与 #{g.id}「{texts.esc(g.prize)}」的人。",
                 parse_mode=ParseMode.HTML,
             )
-            _schedule_delete(context, chat.id, tip.message_id)
             g = db.get(g.id)
             if not await service.maybe_finish_by_cap(context.bot, context.application, g):
                 await service.refresh_card(context.bot, g)

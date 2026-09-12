@@ -14,7 +14,7 @@ import logging.handlers
 from telegram import BotCommand, BotCommandScopeAllGroupChats
 from telegram.ext import Application, ContextTypes
 
-from lottery import db, handlers, service, texts
+from lottery import db, ephemeral, handlers, service, texts
 from lottery.config import Config
 
 log = logging.getLogger("lottery")
@@ -78,12 +78,23 @@ def main() -> None:
     db.init(cfg.db_path)
     texts.set_timezone(cfg.display_tz)
 
-    app = Application.builder().token(cfg.bot_token).post_init(_post_init).build()
+    app = (
+        Application.builder()
+        .bot(ephemeral.EphemeralBot(cfg.bot_token))
+        .post_init(_post_init)
+        .build()
+    )
     app.bot_data["config"] = cfg
+    ephemeral.bind(app, cfg.ephemeral_seconds)
     handlers.register(app)
     app.add_error_handler(_on_error)
 
     log.info("数据库：%s", cfg.db_path)
+    if cfg.ephemeral_seconds > 0:
+        log.info("群消息自动清理：%s 秒（抽奖卡片 / 开奖结果 / 创建面板除外）",
+                 cfg.ephemeral_seconds)
+    else:
+        log.info("群消息自动清理：已关闭")
     if cfg.log_file:
         log.info("日志文件：%s（%s MB 滚动，保留 %s 份）",
                  cfg.log_file, cfg.log_max_mb, cfg.log_backups)

@@ -11,7 +11,7 @@ from telegram.constants import ChatType, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from .. import db, eligibility, keyboards, service, texts
+from .. import db, eligibility, ephemeral, keyboards, service, texts
 
 log = logging.getLogger(__name__)
 
@@ -150,6 +150,7 @@ async def new_giveaway(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         reply_markup=keyboards.draft_kb(g, _remaining(g)),
     )
     db.update(gid, message_id=sent.message_id)
+    ephemeral.keep(sent)   # 配置面板要等管理员慢慢设，不能 30 秒就没
 
 
 # ---------------------------------------------------------------- 面板按钮

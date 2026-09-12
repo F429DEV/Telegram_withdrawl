@@ -11,7 +11,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import Application, ContextTypes
 
-from . import db, eligibility, engine, keyboards, texts
+from . import db, eligibility, engine, ephemeral, keyboards, texts
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +64,7 @@ async def publish(
         )
         message_id = msg.message_id
     db.update(g.id, message_id=message_id)
+    ephemeral.cancel(g.chat_id, message_id)   # 抽奖卡片要一直留着
     schedule_end(app, db.get(g.id))
     return message_id
 
@@ -86,6 +87,7 @@ async def _repost_card(bot: Bot, g: db.Giveaway) -> None:
         log.warning("抽奖 #%s 的卡片没了，补发也失败：%s", g.id, exc)
         return
     db.update(g.id, message_id=msg.message_id)
+    ephemeral.cancel(g.chat_id, msg.message_id)   # 补发的卡片同样要留着
     log.info("抽奖 #%s 的卡片已被删除，已补发一条新的（message_id=%s）", g.id, msg.message_id)
 
 
@@ -216,13 +218,14 @@ async def finish(bot: Bot, giveaway_id: int, *, reason: str = "") -> bool:
     if reason:
         text += f"\n<i>{texts.esc(reason)}</i>"
     try:
-        await bot.send_message(
+        announced = await bot.send_message(
             chat_id=g.chat_id,
             text=text,
             parse_mode=ParseMode.HTML,
             reply_to_message_id=g.message_id,
             allow_sending_without_reply=True,
         )
+        ephemeral.keep(announced)   # 中奖公布要留着
     except TelegramError as exc:
         log.warning("发送开奖结果 #%s 失败: %s", g.id, exc)
     return True
@@ -246,12 +249,14 @@ async def reroll(bot: Bot, giveaway_id: int) -> bool:
     db.update(g.id, seed=seed)
     db.save_winners(g.id, wins)
     g = db.get(g.id)
-    await bot.send_message(
-        chat_id=g.chat_id,
-        text="🔁 <b>重新抽取</b>（已排除上一轮中奖者）\n\n" + texts.result(g, wins, len(ok)),
-        parse_mode=ParseMode.HTML,
-        reply_to_message_id=g.message_id,
-        allow_sending_without_reply=True,
+    ephemeral.keep(
+        await bot.send_message(
+            chat_id=g.chat_id,
+            text="🔁 <b>重新抽取</b>（已排除上一轮中奖者）\n\n" + texts.result(g, wins, len(ok)),
+            parse_mode=ParseMode.HTML,
+            reply_to_message_id=g.message_id,
+            allow_sending_without_reply=True,
+        )
     )
     return True
 

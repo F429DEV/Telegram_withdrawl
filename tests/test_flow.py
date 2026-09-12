@@ -10,6 +10,16 @@ from telegram.error import BadRequest
 from lottery import db, service
 
 
+def _message(chat_id, message_id, text=""):
+    """够用的 Message 替身：真实的 Message 一定带 chat_id 和 chat。"""
+    return SimpleNamespace(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=text,
+        chat=SimpleNamespace(id=chat_id, type="supergroup"),
+    )
+
+
 class FakeBot:
     def __init__(self):
         self.sent = []
@@ -19,11 +29,11 @@ class FakeBot:
     async def send_message(self, chat_id, text, **kw):
         self._next_id += 1
         self.sent.append(text)
-        return SimpleNamespace(message_id=self._next_id, text=text)
+        return _message(chat_id, self._next_id, text)
 
     async def edit_message_text(self, chat_id, message_id, text, **kw):
         self.edited.append(text)
-        return SimpleNamespace(message_id=message_id, text=text)
+        return _message(chat_id, message_id, text)
 
     async def get_chat_member(self, chat_id, user_id):
         return SimpleNamespace(status="member")

@@ -35,6 +35,7 @@ class Config:
     log_file: Optional[Path] = None
     log_max_mb: int = 10
     log_backups: int = 5
+    ephemeral_seconds: int = 30
 
     @classmethod
     def load(cls) -> "Config":
@@ -59,6 +60,7 @@ class Config:
             log_file=cls._log_file(os.getenv("LOG_FILE", "logs/bot.log").strip()),
             log_max_mb=int(os.getenv("LOG_MAX_MB", "10") or 10),
             log_backups=int(os.getenv("LOG_BACKUPS", "5") or 5),
+            ephemeral_seconds=int(os.getenv("EPHEMERAL_SECONDS", "30") or 0),
         )
 
     @staticmethod
