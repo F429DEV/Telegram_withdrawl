@@ -223,51 +223,93 @@ def requirement_card(g: db.Giveaway) -> str:
 # ---------------------------------------------------------------- 提示语
 
 START_PRIVATE = (
-    "👋 我是群抽奖机器人。\n\n"
-    "把我拉进群，给我「删除消息」和「置顶消息」权限（可选，但体验更好），"
-    "然后群管理员发 /new 就能开抽奖了。\n\n"
-    "发 /help 看全部命令。"
+    "👋 我是群机器人，目前有三个板块：\n\n"
+    "🎁 <b>抽奖</b>　五种玩法，管理员发 /new 就能开\n"
+    "🏅 <b>积分</b>　发言攒分、每日签到、群内排名\n"
+    "🛒 <b>积分商城</b>　用积分换奖品\n\n"
+    "把我拉进群，管理员发 /settings 配一下就能用。\n"
+    "发 /help 看总览。"
 )
 
-HELP = (
-    "<b>🎁 抽奖机器人使用说明</b>\n\n"
-    "<b>发起抽奖</b>\n"
+HELP_OVERVIEW = (
+    "🤖 <b>机器人功能总览</b>\n\n"
+    "<b>🎁 抽奖</b>　五种玩法、三种开奖条件、可配门槛和邀请加成\n"
+    "　/help 抽奖\n\n"
+    "<b>🏅 积分</b>　发言攒分、每日签到、群内排名\n"
+    "　群里直接发「签到」「我的积分」「排行榜」\n"
+    "　/help 积分\n\n"
+    "<b>🛒 积分商城</b>　用积分换奖品，卡密自动发货\n"
+    "　群里直接发「积分商城」\n"
+    "　/help 商城\n\n"
+    "<b>其他</b>\n"
+    "/viewmyinfo — 自己的 ID、本群记录、积分、历史中奖\n"
+    "/invite — 拿自己的专属邀请链接（私信发给你）\n"
+    "/settings — 群设置（管理员，三个板块都在里面）\n\n"
+    "<i>机器人在群里发的消息 30 秒后自动清理，抽奖卡片和开奖结果除外。</i>"
+)
+
+HELP_LOTTERY = (
+    "<b>🎁 抽奖</b>\n\n"
+    "<b>发起</b>\n"
     "/new — 打开配置面板，按按钮选玩法、名额、时长、门槛，最后点发布\n"
     "/new 奖品名 | 名额 | 时长 — 一行搞定，例：<code>/new 会员月卡 | 3 | 30m</code>\n"
     "　时长写法：30m / 2h / 1d，写 0 表示不限时\n"
-    "/new 奖品 | 名额 | 时长 | 口令1 口令2 — 第四段写口令就直接开口令玩法，\n"
-    "　例：<code>/new 会员月卡 | 3 | 30m | 抽 发财 666</code>，发中任意一个都算参与\n"
-    "/pick 3 — 回复一条包含名单的消息（每行或逗号分隔一个），直接从名单里抽 3 个\n\n"
-    "<b>管理进行中的抽奖</b>\n"
-    "/list — 列出本群进行中的抽奖\n"
-    "/view &lt;编号&gt; — 看某场抽奖的全部参数：玩法、名额、开奖条件、门槛、\n"
-    "　邀请加成、参与人数、权重前 5、中奖者\n"
-    "/end &lt;编号&gt; — 立即开奖\n"
-    "/cancel &lt;编号&gt; — 取消抽奖\n"
-    "/reroll &lt;编号&gt; — 重新抽（排除已中奖的人）\n"
-    "/verify &lt;编号&gt; — 看这场抽奖的完整排名（第 1 名到最后）\n\n"
-    "<b>群设置</b>\n"
-    "/settings — 谁能发起抽奖、默认要求加入哪些频道\n\n"
-    "<b>谁都能用</b>\n"
-    "/invite — 在群里发，机器人把你的专属邀请链接<b>私信</b>给你；\n"
-    "　别人从这条链接进群就算你邀请的\n"
-    "/viewmyinfo — 看自己的 Telegram 用户 ID、当前群 ID，以及自己在本群的\n"
-    "　发言数、邀请人数、正在参与的抽奖和权重、历史中奖记录\n\n"
-    "<b>玩法说明</b>\n"
+    "/new 奖品 | 名额 | 时长 | 口令1 口令2 — 第四段写口令就直接开口令玩法\n"
+    "/pick 3 — 回复一条含名单的消息，从名单里抽 3 个\n\n"
+    "<b>管理</b>\n"
+    "/list — 本群进行中的抽奖\n"
+    "/view &lt;编号&gt; — 某场的全部参数、完整参与名单、中奖者\n"
+    "/end &lt;编号&gt; — 立即开奖　/cancel &lt;编号&gt; — 取消\n"
+    "/reroll &lt;编号&gt; — 重抽（排除已中奖的人）\n"
+    "/verify &lt;编号&gt; — 结果摘要\n\n"
+    "<b>五种玩法</b>\n"
     "• 按钮：发一条带按钮的消息，点一下就报名\n"
-    "• 口令：在群里发指定口令即报名；可以一次设多个口令，发中任意一个都算\n"
+    "• 口令：在群里发指定口令即报名；可设多个，发中任意一个都算\n"
     "• 积分：抽奖期间正常聊天自动参与，发言越多权重越高，不设上限\n"
-    "• 消息：抽奖期间正常聊天，开奖时随机抽一条消息，发这条的人中奖\n"
+    "• 消息：开奖时随机抽一条消息，发这条的人中奖\n"
     "• 名单：管理员贴一份名单，直接抽\n\n"
     "<b>邀请加成</b>\n"
-    "创建时点「👥 邀请加成」，每邀请 1 个人进群，中奖权重就 +N。\n"
-    "参与者在群里发 /invite，机器人会把专属链接私信给他，\n"
-    "别人从这条链接进群才算数。\n"
-    "只算本场抽奖开始之后进来的人，同一个人只算一次（退群再进不重复计）。\n"
-    "机器人需要「邀请用户」权限才能生成链接。\n\n"
-    "开奖用加权随机：没开加成时人人机会均等，开了积分或邀请加成的，"
-    "权重越高中奖概率越大。"
+    "创建时点「👥 邀请加成」，每邀请 1 人进群权重 +N。\n"
+    "参与者发 /invite 拿专属链接，别人从那条链接进群才算数。\n\n"
+    "<i>注意：抽奖里的「积分玩法」只数本场发言，和下面的积分板块是两套东西。</i>"
 )
+
+HELP_POINTS = (
+    "<b>🏅 积分</b>\n\n"
+    "积分<b>按群独立</b>，A 群攒的分只能在 A 群花。\n\n"
+    "<b>怎么攒</b>\n"
+    "• 发言 —— 每条有效发言给 N 分，管理员可调\n"
+    "• 签到 —— 群里发「签到」或 /checkin，每天一次\n\n"
+    "<b>怎么查</b>\n"
+    "• 发「我的积分」或 /mypoints —— 余额、累计、群内排名、今日进度\n"
+    "• 发「排行榜」或 /top —— 前 10 名\n\n"
+    "<b>发言分有三道闸</b>（都在 /settings → 🏅 积分设置 里调）\n"
+    "• 冷却：同一个人多久才能再拿一次\n"
+    "• 每日上限：一天靠发言最多拿多少\n"
+    "• 最短长度：太短的不给分\n"
+    "另外纯表情、纯标点、和上一条重复的消息一律不给分，这条写死了。\n\n"
+    "<i>攒够了发「积分商城」换东西。</i>"
+)
+
+HELP_SHOP = (
+    "<b>🛒 积分商城</b>\n\n"
+    "群里发「积分商城」或 /shop 看货架，点按钮兑换，再确认一次就扣分。\n\n"
+    "<b>两类奖品</b>\n"
+    "• 卡密 —— 管理员预先导入一批码，兑换后机器人<b>立刻私信</b>给你\n"
+    "　（没跟机器人私聊过的话，码会用弹窗给你，记得马上复制）\n"
+    "• 实物 —— 扣分后生成兑换单，管理员收到通知去发货\n\n"
+    "<b>管理员</b>（/settings → 🛒 商城管理）\n"
+    "• ➕ 上架奖品：<code>名称 | 积分 | 实物或卡密 | 库存</code>\n"
+    "• 点奖品进去改价格、库存、每人限兑、上下架、导入卡密\n"
+    "• 📦 待发货：发完点「已发货」，发不了点「退积分」把分退回去\n\n"
+    "<i>兑换单退回时积分和库存都会还原。</i>"
+)
+
+HELP_SECTIONS = {
+    "抽奖": HELP_LOTTERY, "lottery": HELP_LOTTERY, "draw": HELP_LOTTERY,
+    "积分": HELP_POINTS, "points": HELP_POINTS,
+    "商城": HELP_SHOP, "积分商城": HELP_SHOP, "shop": HELP_SHOP,
+}
 
 NOT_GROUP = "这个命令要在群里用。把我加到群里，然后在群里发 /new。"
 NOT_ADMIN = "只有群管理员能发起 / 管理抽奖。"
@@ -286,3 +328,162 @@ CHANNEL_PROMPT = (
     "输入 <code>清空</code> 可以取消这项要求。"
 )
 WINNERS_PROMPT = "请<b>回复这条消息</b>，输入中奖名额（1-100 的数字）。"
+
+# ================================================================ 积分板块
+
+def _rank_label(rank: int, total: int) -> str:
+    if rank <= 0:
+        return "还没上榜"
+    return f"第 {rank} 名 / 共 {total} 人"
+
+
+def checkin_ok(name: str, got: int, balance: int, streak: int,
+               rank: int, total: int) -> str:
+    lines = [f"✅ <b>签到成功</b>　+{got} 分", ""]
+    if streak > 1:
+        lines.append(f"已连续签到 <b>{streak}</b> 天")
+    lines.append(f"当前 <b>{balance}</b> 分　{_rank_label(rank, total)}")
+    return "\n".join(lines)
+
+
+def checkin_again(balance: int, streak: int, rank: int, total: int) -> str:
+    tail = f"（连签 {streak} 天）" if streak > 1 else ""
+    return (
+        f"今天已经签过了，明天再来。{tail}\n"
+        f"当前 <b>{balance}</b> 分　{_rank_label(rank, total)}"
+    )
+
+
+def points_card(
+    name: str,
+    w: Optional[db.Wallet],
+    rank: int,
+    total: int,
+    settings: dict,
+    today: dict,
+    streak: int,
+    redeemed: int,
+) -> str:
+    balance = w.balance if w else 0
+    earned = w.total_earned if w else 0
+    lines = [
+        f"🏅 <b>{esc(name)} 的积分</b>",
+        "",
+        f"当前余额：<b>{balance}</b> 分",
+        f"累计获得：{earned} 分",
+        f"群内排名：{_rank_label(rank, total)}",
+        "",
+    ]
+    cap = settings["daily_cap"]
+    got_today = today["chat_earned"]
+    lines.append(
+        f"今日发言已得：{got_today} / {cap} 分" if cap > 0
+        else f"今日发言已得：{got_today} 分（不限）"
+    )
+    if settings["checkin_points"] > 0:
+        if today["checked_in"]:
+            extra = f"（连签 {streak} 天）" if streak > 1 else ""
+            lines.append(f"今日签到：已签{extra}")
+        else:
+            lines.append(f"今日签到：<b>还没签</b>，发「签到」拿 {settings['checkin_points']} 分")
+    if redeemed:
+        lines.append(f"累计兑换：{redeemed} 次")
+    lines.append("")
+    lines.append("<i>发「积分商城」看能换什么，发「排行榜」看谁最多</i>")
+    return "\n".join(lines)
+
+
+def points_top(rows: list, me_rank: int, me_balance: int, total: int) -> str:
+    if not rows:
+        return "🏆 <b>积分排行</b>\n\n本群还没有人有积分。发言和签到都能攒。"
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = [f"🏆 <b>积分排行</b>（共 {total} 人上榜）", ""]
+    for i, w in enumerate(rows, 1):
+        mark = medals.get(i, f"{i}.")
+        lines.append(f"{mark} {esc(w.full_name) or w.user_id} — <b>{w.balance}</b> 分")
+    lines.append("")
+    lines.append(
+        f"你：{_rank_label(me_rank, total)}，{me_balance} 分" if me_rank > 0
+        else "你还没上榜，发言和签到都能攒分"
+    )
+    return "\n".join(lines)
+
+
+def points_disabled() -> str:
+    return "本群还没开启积分功能。管理员可以在 /settings → 🏅 积分设置 里打开。"
+
+
+# ================================================================ 积分商城
+
+def _stock_label(item: db.ShopItem, stock: Optional[int]) -> str:
+    if stock is None:
+        return "不限量"
+    return f"剩 {stock}" if stock > 0 else "已兑完"
+
+
+def _kind_label(item: db.ShopItem) -> str:
+    return "卡密自动发" if item.is_code else "需人工发货"
+
+
+def shop_card(balance: int, rows: list) -> str:
+    """rows: [(ShopItem, 可兑数量 or None)]"""
+    if not rows:
+        return (
+            "🛒 <b>积分商城</b>\n\n货架还是空的。\n"
+            "<i>管理员可以在 /settings → 🛒 商城管理 里上架奖品。</i>"
+        )
+    lines = [f"🛒 <b>积分商城</b>", "", f"你有 <b>{balance}</b> 分", ""]
+    for i, (item, stock) in enumerate(rows, 1):
+        bits = [f"<b>{item.cost}</b> 分", _kind_label(item), _stock_label(item, stock)]
+        if item.per_user_limit:
+            bits.append(f"每人限 {item.per_user_limit} 次")
+        lines.append(f"{i}. {esc(item.name)} — " + " · ".join(bits))
+        if item.note:
+            lines.append(f"　　<i>{esc(item.note)}</i>")
+    lines.append("")
+    lines.append("<i>点下面的按钮兑换</i>")
+    return "\n".join(lines)
+
+
+def redeem_confirm(mention: str, item: db.ShopItem, balance: int) -> str:
+    return (
+        f"{mention} 确认用 <b>{item.cost}</b> 分兑换「{esc(item.name)}」？\n"
+        f"你当前 {balance} 分，兑换后剩 {balance - item.cost} 分。"
+    )
+
+
+def redeem_done_physical(rid: int, item: db.ShopItem, balance: int) -> str:
+    return (
+        f"✅ 兑换成功，已登记兑换单 <b>#{rid}</b>\n"
+        f"「{esc(item.name)}」-{item.cost} 分，你还有 {balance} 分。\n"
+        f"<i>管理员已收到通知，等发货就行。</i>"
+    )
+
+
+def redeem_done_code(item: db.ShopItem, balance: int) -> str:
+    return (
+        f"✅ 兑换成功，卡密已私信发给你\n"
+        f"「{esc(item.name)}」-{item.cost} 分，你还有 {balance} 分。"
+    )
+
+
+def code_dm(item: db.ShopItem, code: str) -> str:
+    return (
+        f"🎟 <b>你兑换的「{esc(item.name)}」</b>\n\n"
+        f"<code>{esc(code)}</code>\n\n"
+        f"<i>这条消息不会自动删除，但建议你自己保存一份。</i>"
+    )
+
+
+def redemption_notice(record: db.Redemption, chat_title: str) -> str:
+    who = user_link(record.user_id, record.full_name, record.username)
+    at = f"（@{esc(record.username)}）" if record.username else ""
+    return (
+        f"📦 <b>新兑换单 #{record.id}</b>\n\n"
+        f"群：{esc(chat_title) or record.chat_id}\n"
+        f"奖品：{esc(record.item_name)}\n"
+        f"消耗：{record.cost} 分\n"
+        f"兑换人：{who}{at}　<code>{record.user_id}</code>\n\n"
+        f"<i>发完货到 /settings → 🛒 商城管理 → 待处理 里标一下。</i>"
+    )
+

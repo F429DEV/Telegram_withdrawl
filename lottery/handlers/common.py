@@ -46,8 +46,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/help 给总览，/help 积分 这样给单个板块的细节。
+
+    拆开是因为群消息 30 秒就清掉了 —— 一屏能看完的说明比一长篇有用。
+    """
+    arg = (context.args[0].strip().lower() if context.args else "")
+    body = texts.HELP_SECTIONS.get(arg, texts.HELP_OVERVIEW)
     await update.effective_message.reply_text(
-        texts.HELP, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+        body, parse_mode=ParseMode.HTML, disable_web_page_preview=True
     )
 
 

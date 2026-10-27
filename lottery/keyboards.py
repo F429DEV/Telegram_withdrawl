@@ -93,3 +93,30 @@ def join_kb(g: db.Giveaway, count: int) -> Markup | None:
 
 def ended_kb(g: db.Giveaway) -> Markup:
     return Markup([[Btn("🔍 查看结果", callback_data=f"j:{g.id}:verify")]])
+
+# ---------------------------------------------------------------- 积分商城
+
+def shop_kb(rows: list) -> Markup | None:
+    """rows: [(ShopItem, 可兑数量 or None)]。兑完的不给按钮。"""
+    buttons = []
+    for item, stock in rows:
+        if stock is not None and stock <= 0:
+            continue
+        label = f"{item.name}（{item.cost} 分）"
+        buttons.append(Btn(label[:40], callback_data=f"sh:{item.id}:ask"))
+    if not buttons:
+        return None
+    rows_out = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    return Markup(rows_out)
+
+
+def redeem_confirm_kb(item_id: int, user_id: int) -> Markup:
+    return Markup(
+        [
+            [
+                Btn("✅ 确认兑换", callback_data=f"sh:{item_id}:buy:{user_id}"),
+                Btn("取消", callback_data=f"sh:{item_id}:no:{user_id}"),
+            ]
+        ]
+    )
+

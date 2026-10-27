@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -87,6 +89,101 @@ CREATE TABLE IF NOT EXISTS user_seen (
     msg_count     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (chat_id, user_id)
 );
+
+-- ============================ 积分板块 ============================
+
+-- 每群一个钱包。A 群挣的分只能在 A 群用。
+CREATE TABLE IF NOT EXISTS points (
+    chat_id      INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    balance      INTEGER NOT NULL DEFAULT 0,
+    total_earned INTEGER NOT NULL DEFAULT 0,
+    username     TEXT,
+    full_name    TEXT,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_points_rank ON points(chat_id, balance DESC);
+
+-- 流水。积分出了问题全靠这张表复盘。
+CREATE TABLE IF NOT EXISTS point_logs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id       INTEGER NOT NULL,
+    user_id       INTEGER NOT NULL,
+    delta         INTEGER NOT NULL,
+    reason        TEXT    NOT NULL,
+    balance_after INTEGER NOT NULL,
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_point_logs_user ON point_logs(chat_id, user_id, id DESC);
+
+-- 每人每天的计数：发言拿了多少、签到没签、上次发言拿分是什么时候（冷却用）
+CREATE TABLE IF NOT EXISTS point_daily (
+    chat_id      INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    day          TEXT    NOT NULL,
+    chat_earned    INTEGER NOT NULL DEFAULT 0,
+    checked_in     INTEGER NOT NULL DEFAULT 0,
+    last_chat_at   INTEGER NOT NULL DEFAULT 0,
+    last_text_hash TEXT,
+    PRIMARY KEY (chat_id, user_id, day)
+);
+
+-- 每群的积分规则，管理员在 /settings 里调
+CREATE TABLE IF NOT EXISTS point_settings (
+    chat_id          INTEGER PRIMARY KEY,
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    per_message      INTEGER NOT NULL DEFAULT 1,
+    daily_cap        INTEGER NOT NULL DEFAULT 50,
+    cooldown_seconds INTEGER NOT NULL DEFAULT 60,
+    checkin_points   INTEGER NOT NULL DEFAULT 10,
+    min_message_len  INTEGER NOT NULL DEFAULT 2,
+    updated_at       INTEGER NOT NULL
+);
+
+-- ============================ 积分商城 ============================
+
+CREATE TABLE IF NOT EXISTS shop_items (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id        INTEGER NOT NULL,
+    name           TEXT    NOT NULL,
+    cost           INTEGER NOT NULL,
+    kind           TEXT    NOT NULL DEFAULT 'physical',  -- physical=实物走兑换单, code=卡密自动发
+    stock          INTEGER,            -- NULL = 不限量（实物）
+    per_user_limit INTEGER,            -- NULL = 不限次
+    note           TEXT,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shop_items_chat ON shop_items(chat_id, enabled);
+
+-- 卡密库，kind=code 的奖品从这里出货
+CREATE TABLE IF NOT EXISTS shop_codes (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,
+    code    TEXT    NOT NULL,
+    used_by INTEGER,
+    used_at INTEGER,
+    FOREIGN KEY (item_id) REFERENCES shop_items(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_shop_codes_free ON shop_codes(item_id, used_by);
+
+-- 兑换单。实物 pending -> done/refunded；卡密直接 delivered
+CREATE TABLE IF NOT EXISTS redemptions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    INTEGER NOT NULL,
+    item_id    INTEGER,
+    item_name  TEXT    NOT NULL,
+    cost       INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    username   TEXT,
+    full_name  TEXT,
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    code       TEXT,
+    created_at INTEGER NOT NULL,
+    handled_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_redemptions_chat ON redemptions(chat_id, status, id DESC);
 
 -- 消息抽奖用：抽奖期间群里的每条消息都记一行，开奖时随机抽一条，作者中奖。
 CREATE TABLE IF NOT EXISTS messages (
@@ -292,6 +389,25 @@ def _exec(sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
 
 def now() -> int:
     return int(time.time())
+
+
+_TZ = "Asia/Shanghai"
+
+
+def set_timezone(name: str) -> None:
+    """签到和每日上限按这个时区切天，和消息里显示的时间保持一致。"""
+    global _TZ
+    try:
+        ZoneInfo(name)
+        _TZ = name
+    except Exception:
+        _TZ = "Asia/Shanghai"
+
+
+def day_key(ts: Optional[int] = None) -> str:
+    """YYYY-MM-DD，按显示时区。用字符串存，跨夏令时也不会算错天。"""
+    moment = datetime.fromtimestamp(ts if ts is not None else now(), timezone.utc)
+    return moment.astimezone(ZoneInfo(_TZ)).strftime("%Y-%m-%d")
 
 
 # ---------------------------------------------------------------- 抽奖 CRUD
@@ -772,3 +888,438 @@ def save_chat_settings(chat_id: int, *, admin_only: bool | None = None,
              updated_at=excluded.updated_at""",
         (chat_id, int(cur["admin_only"]), json.dumps(cur["default_channels"], ensure_ascii=False), now()),
     )
+
+# ================================================================ 积分板块
+
+POINT_DEFAULTS = {
+    "enabled": True,
+    "per_message": 1,        # 每条有效发言给多少分
+    "daily_cap": 50,         # 靠发言每天最多拿多少分，0 = 不限
+    "cooldown_seconds": 60,  # 同一个人多久才能再拿一次发言分，0 = 不限
+    "checkin_points": 10,    # 每日签到给多少分
+    "min_message_len": 2,    # 短于这个长度的消息不给分
+}
+
+REASON_CHAT = "chat"
+REASON_CHECKIN = "checkin"
+REASON_REDEEM = "redeem"
+REASON_REFUND = "refund"
+REASON_ADMIN = "admin"
+
+
+@dataclass
+class Wallet:
+    user_id: int
+    balance: int
+    total_earned: int
+    username: Optional[str]
+    full_name: str
+
+
+def point_settings(chat_id: int) -> dict[str, Any]:
+    row = conn().execute(
+        "SELECT * FROM point_settings WHERE chat_id=?", (chat_id,)
+    ).fetchone()
+    if row is None:
+        return {"chat_id": chat_id, **POINT_DEFAULTS}
+    out: dict[str, Any] = {"chat_id": chat_id}
+    for key in POINT_DEFAULTS:
+        out[key] = bool(row[key]) if key == "enabled" else int(row[key])
+    return out
+
+
+def save_point_settings(chat_id: int, **changes: Any) -> dict[str, Any]:
+    current = point_settings(chat_id)
+    for key, value in changes.items():
+        if key not in POINT_DEFAULTS:
+            raise KeyError(f"未知的积分设置: {key}")
+        current[key] = value
+    _exec(
+        """INSERT INTO point_settings
+           (chat_id, enabled, per_message, daily_cap, cooldown_seconds,
+            checkin_points, min_message_len, updated_at)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON CONFLICT(chat_id) DO UPDATE SET
+             enabled=excluded.enabled,
+             per_message=excluded.per_message,
+             daily_cap=excluded.daily_cap,
+             cooldown_seconds=excluded.cooldown_seconds,
+             checkin_points=excluded.checkin_points,
+             min_message_len=excluded.min_message_len,
+             updated_at=excluded.updated_at""",
+        (
+            chat_id,
+            int(bool(current["enabled"])),
+            int(current["per_message"]),
+            int(current["daily_cap"]),
+            int(current["cooldown_seconds"]),
+            int(current["checkin_points"]),
+            int(current["min_message_len"]),
+            now(),
+        ),
+    )
+    return current
+
+
+# ---------------------------------------------------------------- 钱包
+
+def add_points(
+    chat_id: int,
+    user_id: int,
+    delta: int,
+    reason: str,
+    username: Optional[str] = None,
+    full_name: Optional[str] = None,
+) -> int:
+    """加减积分，返回操作后的余额。余额不会被扣成负数。"""
+    row = conn().execute(
+        "SELECT balance FROM points WHERE chat_id=? AND user_id=?", (chat_id, user_id)
+    ).fetchone()
+    before = int(row["balance"]) if row else 0
+    after = max(0, before + delta)
+    real_delta = after - before
+    earned = max(0, real_delta)
+
+    _exec(
+        """INSERT INTO points
+           (chat_id, user_id, balance, total_earned, username, full_name, updated_at)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(chat_id, user_id) DO UPDATE SET
+             balance=excluded.balance,
+             total_earned=points.total_earned+?,
+             username=COALESCE(excluded.username, points.username),
+             full_name=COALESCE(excluded.full_name, points.full_name),
+             updated_at=excluded.updated_at""",
+        (chat_id, user_id, after, earned, username, full_name, now(), earned),
+    )
+    _exec(
+        "INSERT INTO point_logs (chat_id, user_id, delta, reason, balance_after, created_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (chat_id, user_id, real_delta, reason, after, now()),
+    )
+    return after
+
+
+def point_balance(chat_id: int, user_id: int) -> int:
+    row = conn().execute(
+        "SELECT balance FROM points WHERE chat_id=? AND user_id=?", (chat_id, user_id)
+    ).fetchone()
+    return int(row["balance"]) if row else 0
+
+
+def wallet(chat_id: int, user_id: int) -> Optional[Wallet]:
+    row = conn().execute(
+        "SELECT user_id, balance, total_earned, username, full_name FROM points "
+        "WHERE chat_id=? AND user_id=?",
+        (chat_id, user_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return Wallet(row["user_id"], int(row["balance"]), int(row["total_earned"]),
+                  row["username"], row["full_name"] or "")
+
+
+def point_rank(chat_id: int, user_id: int) -> tuple[int, int]:
+    """返回 (名次, 本群有积分的人数)。余额相同算并列。"""
+    total = int(conn().execute(
+        "SELECT COUNT(*) AS c FROM points WHERE chat_id=? AND balance>0", (chat_id,)
+    ).fetchone()["c"])
+    mine = point_balance(chat_id, user_id)
+    if mine <= 0:
+        return 0, total
+    ahead = int(conn().execute(
+        "SELECT COUNT(*) AS c FROM points WHERE chat_id=? AND balance>?", (chat_id, mine)
+    ).fetchone()["c"])
+    return ahead + 1, total
+
+
+def point_top(chat_id: int, limit: int = 10) -> list[Wallet]:
+    rows = conn().execute(
+        "SELECT user_id, balance, total_earned, username, full_name FROM points "
+        "WHERE chat_id=? AND balance>0 ORDER BY balance DESC, user_id LIMIT ?",
+        (chat_id, limit),
+    ).fetchall()
+    return [
+        Wallet(r["user_id"], int(r["balance"]), int(r["total_earned"]),
+               r["username"], r["full_name"] or "")
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------- 每日计数
+
+def daily(chat_id: int, user_id: int, day: Optional[str] = None) -> dict[str, int]:
+    day = day or day_key()
+    row = conn().execute(
+        "SELECT chat_earned, checked_in, last_chat_at, last_text_hash FROM point_daily "
+        "WHERE chat_id=? AND user_id=? AND day=?",
+        (chat_id, user_id, day),
+    ).fetchone()
+    if row is None:
+        return {"chat_earned": 0, "checked_in": 0, "last_chat_at": 0, "last_text_hash": None}
+    return {
+        "chat_earned": int(row["chat_earned"]),
+        "checked_in": int(row["checked_in"]),
+        "last_chat_at": int(row["last_chat_at"]),
+        "last_text_hash": row["last_text_hash"],
+    }
+
+
+def bump_daily_chat(
+    chat_id: int, user_id: int, earned: int,
+    text_hash: Optional[str] = None, day: Optional[str] = None,
+) -> None:
+    day = day or day_key()
+    _exec(
+        """INSERT INTO point_daily
+           (chat_id, user_id, day, chat_earned, last_chat_at, last_text_hash)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(chat_id, user_id, day) DO UPDATE SET
+             chat_earned=point_daily.chat_earned+excluded.chat_earned,
+             last_chat_at=excluded.last_chat_at,
+             last_text_hash=excluded.last_text_hash""",
+        (chat_id, user_id, day, earned, now(), text_hash),
+    )
+
+
+def mark_checkin(chat_id: int, user_id: int, day: Optional[str] = None) -> bool:
+    """标记今天已签到。返回 False 表示今天已经签过了。"""
+    day = day or day_key()
+    cur = _exec(
+        """INSERT INTO point_daily (chat_id, user_id, day, checked_in)
+           VALUES (?,?,?,1)
+           ON CONFLICT(chat_id, user_id, day) DO UPDATE SET checked_in=1
+           WHERE point_daily.checked_in=0""",
+        (chat_id, user_id, day),
+    )
+    return cur.rowcount > 0
+
+
+def checkin_streak(chat_id: int, user_id: int) -> int:
+    """连续签到天数（含今天）。"""
+    rows = conn().execute(
+        "SELECT day FROM point_daily WHERE chat_id=? AND user_id=? AND checked_in=1 "
+        "ORDER BY day DESC LIMIT 400",
+        (chat_id, user_id),
+    ).fetchall()
+    if not rows:
+        return 0
+    from datetime import date, timedelta
+
+    days = [date.fromisoformat(r["day"]) for r in rows]
+    today = date.fromisoformat(day_key())
+    if days[0] not in (today, today - timedelta(days=1)):
+        return 0
+    streak, cursor = 1, days[0]
+    for d in days[1:]:
+        if d == cursor - timedelta(days=1):
+            streak += 1
+            cursor = d
+        else:
+            break
+    return streak
+
+
+# ================================================================ 积分商城
+
+KIND_PHYSICAL = "physical"
+KIND_CODE = "code"
+
+STATUS_PENDING = "pending"
+STATUS_DONE = "done"
+STATUS_REFUNDED = "refunded"
+STATUS_DELIVERED = "delivered"
+
+
+@dataclass
+class ShopItem:
+    id: int
+    chat_id: int
+    name: str
+    cost: int
+    kind: str
+    stock: Optional[int]
+    per_user_limit: Optional[int]
+    note: str
+    enabled: bool
+
+    @property
+    def is_code(self) -> bool:
+        return self.kind == KIND_CODE
+
+
+def _shop_item(row: sqlite3.Row) -> ShopItem:
+    return ShopItem(
+        row["id"], row["chat_id"], row["name"], int(row["cost"]), row["kind"],
+        None if row["stock"] is None else int(row["stock"]),
+        None if row["per_user_limit"] is None else int(row["per_user_limit"]),
+        row["note"] or "", bool(row["enabled"]),
+    )
+
+
+def shop_add_item(
+    chat_id: int, name: str, cost: int, kind: str = KIND_PHYSICAL,
+    stock: Optional[int] = None, per_user_limit: Optional[int] = None, note: str = "",
+) -> int:
+    cur = _exec(
+        "INSERT INTO shop_items "
+        "(chat_id, name, cost, kind, stock, per_user_limit, note, enabled, created_at) "
+        "VALUES (?,?,?,?,?,?,?,1,?)",
+        (chat_id, name[:80], max(1, int(cost)), kind, stock, per_user_limit, note[:200], now()),
+    )
+    return int(cur.lastrowid)
+
+
+def shop_item(item_id: int) -> Optional[ShopItem]:
+    row = conn().execute("SELECT * FROM shop_items WHERE id=?", (item_id,)).fetchone()
+    return _shop_item(row) if row else None
+
+
+def shop_list(chat_id: int, only_enabled: bool = True) -> list[ShopItem]:
+    sql = "SELECT * FROM shop_items WHERE chat_id=?"
+    params: list[Any] = [chat_id]
+    if only_enabled:
+        sql += " AND enabled=1"
+    sql += " ORDER BY cost, id"
+    return [_shop_item(r) for r in conn().execute(sql, tuple(params)).fetchall()]
+
+
+_SHOP_UPDATABLE = {"name", "cost", "kind", "stock", "per_user_limit", "note", "enabled"}
+
+
+def shop_update_item(item_id: int, **fields: Any) -> None:
+    sets, values = [], []
+    for key, value in fields.items():
+        if key not in _SHOP_UPDATABLE:
+            raise KeyError(f"不可更新的奖品字段: {key}")
+        if isinstance(value, bool):
+            value = int(value)
+        sets.append(f"{key}=?")
+        values.append(value)
+    if not sets:
+        return
+    values.append(item_id)
+    _exec(f"UPDATE shop_items SET {', '.join(sets)} WHERE id=?", values)
+
+
+def shop_delete_item(item_id: int) -> None:
+    _exec("DELETE FROM shop_codes WHERE item_id=?", (item_id,))
+    _exec("DELETE FROM shop_items WHERE id=?", (item_id,))
+
+
+def shop_add_codes(item_id: int, codes: Iterable[str]) -> int:
+    added = 0
+    for code in codes:
+        code = str(code).strip()
+        if not code:
+            continue
+        _exec("INSERT INTO shop_codes (item_id, code) VALUES (?,?)", (item_id, code[:200]))
+        added += 1
+    return added
+
+
+def shop_free_codes(item_id: int) -> int:
+    row = conn().execute(
+        "SELECT COUNT(*) AS c FROM shop_codes WHERE item_id=? AND used_by IS NULL", (item_id,)
+    ).fetchone()
+    return int(row["c"])
+
+
+def shop_take_code(item_id: int, user_id: int) -> Optional[str]:
+    """取一个还没用过的卡密并标记已用。没库存返回 None。"""
+    row = conn().execute(
+        "SELECT id, code FROM shop_codes WHERE item_id=? AND used_by IS NULL ORDER BY id LIMIT 1",
+        (item_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    cur = _exec(
+        "UPDATE shop_codes SET used_by=?, used_at=? WHERE id=? AND used_by IS NULL",
+        (user_id, now(), row["id"]),
+    )
+    return row["code"] if cur.rowcount > 0 else None
+
+
+# ---------------------------------------------------------------- 兑换单
+
+@dataclass
+class Redemption:
+    id: int
+    chat_id: int
+    item_id: Optional[int]
+    item_name: str
+    cost: int
+    user_id: int
+    username: Optional[str]
+    full_name: str
+    status: str
+    code: Optional[str]
+    created_at: int
+
+
+def _redemption(row: sqlite3.Row) -> Redemption:
+    return Redemption(
+        row["id"], row["chat_id"], row["item_id"], row["item_name"], int(row["cost"]),
+        row["user_id"], row["username"], row["full_name"] or "", row["status"],
+        row["code"], int(row["created_at"]),
+    )
+
+
+def redemption_create(
+    chat_id: int, item: ShopItem, user_id: int, username: Optional[str], full_name: str,
+    status: str, code: Optional[str] = None,
+) -> int:
+    cur = _exec(
+        "INSERT INTO redemptions "
+        "(chat_id, item_id, item_name, cost, user_id, username, full_name, status, code, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (chat_id, item.id, item.name, item.cost, user_id, username, full_name,
+         status, code, now()),
+    )
+    return int(cur.lastrowid)
+
+
+def redemption(redemption_id: int) -> Optional[Redemption]:
+    row = conn().execute("SELECT * FROM redemptions WHERE id=?", (redemption_id,)).fetchone()
+    return _redemption(row) if row else None
+
+
+def redemptions_by_status(chat_id: int, status: str, limit: int = 20) -> list[Redemption]:
+    rows = conn().execute(
+        "SELECT * FROM redemptions WHERE chat_id=? AND status=? ORDER BY id LIMIT ?",
+        (chat_id, status, limit),
+    ).fetchall()
+    return [_redemption(r) for r in rows]
+
+
+def pending_count(chat_id: int) -> int:
+    row = conn().execute(
+        "SELECT COUNT(*) AS c FROM redemptions WHERE chat_id=? AND status=?",
+        (chat_id, STATUS_PENDING),
+    ).fetchone()
+    return int(row["c"])
+
+
+def redemption_set_status(redemption_id: int, status: str) -> bool:
+    cur = _exec(
+        "UPDATE redemptions SET status=?, handled_at=? WHERE id=? AND status=?",
+        (status, now(), redemption_id, STATUS_PENDING),
+    )
+    return cur.rowcount > 0
+
+
+def user_redeemed_count(chat_id: int, item_id: int, user_id: int) -> int:
+    row = conn().execute(
+        "SELECT COUNT(*) AS c FROM redemptions "
+        "WHERE chat_id=? AND item_id=? AND user_id=? AND status!=?",
+        (chat_id, item_id, user_id, STATUS_REFUNDED),
+    ).fetchone()
+    return int(row["c"])
+
+
+def user_redemptions(chat_id: int, user_id: int, limit: int = 10) -> list[Redemption]:
+    rows = conn().execute(
+        "SELECT * FROM redemptions WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT ?",
+        (chat_id, user_id, limit),
+    ).fetchall()
+    return [_redemption(r) for r in rows]

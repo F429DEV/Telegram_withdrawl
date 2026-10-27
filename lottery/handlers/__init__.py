@@ -13,15 +13,15 @@ from telegram.ext import (
     filters,
 )
 
-from . import common, create, manage, owner, participate
+from . import common, create, manage, owner, participate, points, settings, shop
 
 GROUPS = filters.ChatType.GROUPS
 
 
 async def _reply_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ForceReply 的回复可能属于创建面板，也可能属于群设置面板，两边都问一遍。"""
+    """ForceReply 的回复可能属于创建面板，也可能属于设置面板，两边都问一遍。"""
     await create.handle_reply(update, context)
-    await manage.handle_settings_reply(update, context)
+    await settings.handle_reply(update, context)
 
 
 def register(app: Application) -> None:
@@ -38,7 +38,13 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("reroll", manage.reroll_cmd))
     app.add_handler(CommandHandler("verify", manage.verify_cmd))
     app.add_handler(CommandHandler("pick", manage.pick_cmd))
-    app.add_handler(CommandHandler("settings", manage.settings_cmd))
+    app.add_handler(CommandHandler("settings", settings.settings_cmd))
+
+    # ---- 积分板块 ----
+    app.add_handler(CommandHandler(["checkin", "qiandao"], points.checkin))
+    app.add_handler(CommandHandler(["mypoints", "points"], points.my_points))
+    app.add_handler(CommandHandler(["top", "leaderboard"], points.leaderboard))
+    app.add_handler(CommandHandler("shop", shop.shop_cmd))
 
     # ---- 主人私聊专用，不进命令菜单，群里不响应 ----
     app.add_handler(
@@ -52,7 +58,8 @@ def register(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(create.draft_callback, pattern=r"^d:\d+:"))
     app.add_handler(CallbackQueryHandler(create.requirement_callback, pattern=r"^r:\d+:"))
     app.add_handler(CallbackQueryHandler(participate.join_callback, pattern=r"^j:\d+:"))
-    app.add_handler(CallbackQueryHandler(manage.settings_callback, pattern=r"^s:\d+:"))
+    app.add_handler(CallbackQueryHandler(settings.settings_callback, pattern=r"^st:"))
+    app.add_handler(CallbackQueryHandler(shop.shop_callback, pattern=r"^sh:\d+:"))
     app.add_handler(CallbackQueryHandler(manage.view_all_callback, pattern=r"^v:\d+:"))
 
     # ---- 对 ForceReply 的回复（要排在普通群消息前面）----

@@ -10,7 +10,8 @@ from telegram.constants import ChatMemberStatus, ChatType, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from .. import db, eligibility, service, texts
+from .. import db, eligibility, points as point_rules, service, texts
+from . import points as point_cmds, shop as shop_cmds
 
 # 算「在群里」的几种状态
 _IN_GROUP = {
@@ -206,6 +207,22 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     db.touch_user(chat.id, user.id)
 
     text = (msg.text or msg.caption or "").strip()
+
+    # ---- 积分板块：触发词 ----
+    if text:
+        if text in point_rules.CHECKIN_WORDS:
+            await point_cmds.checkin(update, context)
+        elif text in point_rules.BALANCE_WORDS:
+            await point_cmds.my_points(update, context)
+        elif text in point_rules.TOP_WORDS:
+            await point_cmds.leaderboard(update, context)
+        elif text in point_rules.SHOP_WORDS:
+            await shop_cmds.shop_cmd(update, context)
+
+    # ---- 积分板块：发言得分（触发词本身不给分，规则在 points.py 里）----
+    earned = point_rules.earn_from_message(chat.id, user, text)
+    if earned.points:
+        log.debug("群 %s：%s 发言得 %s 分", chat.id, user.id, earned.points)
 
     # 口令报名
     if text:
