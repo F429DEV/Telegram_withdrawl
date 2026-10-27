@@ -54,12 +54,12 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lines = ["本群没有进行中的抽奖。最近结束的：", ""]
         for g in recent:
             state = "已开奖" if g.status == db.STATUS_ENDED else "已取消"
-            lines.append(f"#{g.id} {texts.esc(g.prize)} — {state}")
+            lines.append(f"#{g.id} {texts.prize_label(g)} — {state}")
         await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
         return
     lines = ["<b>进行中的抽奖</b>", ""]
     for g in active:
-        bits = [f"#{g.id}", texts.esc(g.prize) or "(无名)", f"{texts.MODE_SHORT[g.mode]}玩法",
+        bits = [f"#{g.id}", texts.prize_label(g, "(无名)"), f"{texts.MODE_SHORT[g.mode]}玩法",
                 f"{db.participant_count(g.id)} 人参与", f"{g.winners_count} 个名额"]
         if g.end_at:
             bits.append(f"{texts.fmt_time(g.end_at)} 开奖")
@@ -139,7 +139,7 @@ async def verify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lines = [
         f"🔍 <b>抽奖 #{g.id}</b>",
         "",
-        f"奖品：{texts.esc(g.prize)}",
+        f"奖品：{texts.prize_label(g)}",
         f"玩法：{texts.MODE_LABEL.get(g.mode, g.mode)}",
         f"参与人数：{db.participant_count(g.id)}　名额：{g.winners_count}",
     ]
@@ -214,7 +214,7 @@ async def view_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"📋 <b>抽奖 #{g.id} 详情</b>",
         "",
         f"状态：{_STATUS_LABEL.get(g.status, g.status)}",
-        f"奖品：{texts.esc(g.prize) or '（未填写）'}",
+        f"奖品：{texts.prize_label(g, '（未填写）')}",
         f"玩法：{_mode_detail(g)}",
         f"名额：{g.winners_count} 名",
         "开奖条件：" + "；".join(_draw_condition(g)),

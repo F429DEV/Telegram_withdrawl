@@ -488,3 +488,69 @@ class TestRestartRecovery(unittest.IsolatedAsyncioTestCase):
         await service._heartbeat_job(ctx)
         self.assertEqual(hb.read_text(), "0", "API 调不通就不该刷新心跳")
         self.assertTrue(first.isdigit())
+
+
+class TestPointPrize(unittest.IsolatedAsyncioTestCase):
+    """积分奖品：开奖后直接记入本群积分钱包。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        db.init(Path(self.tmp.name) / "pp.db")
+        db.set_timezone("Asia/Shanghai")
+        db.save_point_settings(-100, enabled=True)
+        self.bot = FakeBot()
+        self.app = FakeApp()
+
+    def tearDown(self):
+        db.conn().close()
+        db._conn = None
+        self.tmp.cleanup()
+
+    def _make(self, point_prize=100, winners=2):
+        gid = db.create_draft(-100, 1, {"prize": "", "winners_count": winners})
+        db.update(gid, status=db.STATUS_ACTIVE, message_id=1, point_prize=point_prize)
+        for uid in range(1, 6):
+            db.add_participant(gid, uid, f"u{uid}", f"用户{uid}")
+        return gid
+
+    async def test_each_winner_gets_the_points(self):
+        gid = self._make(point_prize=100, winners=2)
+        await service.finish(self.bot, gid)
+        winners = [w.user_id for w in db.winners(gid)]
+        self.assertEqual(len(winners), 2)
+        for uid in winners:
+            self.assertEqual(db.point_balance(-100, uid), 100, "每人各得 100，不是平分")
+        losers = set(range(1, 6)) - set(winners)
+        for uid in losers:
+            self.assertEqual(db.point_balance(-100, uid), 0)
+
+    async def test_ledger_records_the_giveaway(self):
+        gid = self._make(point_prize=50, winners=1)
+        await service.finish(self.bot, gid)
+        winner = db.winners(gid)[0].user_id
+        entries = db.point_ledger(-100, winner)
+        self.assertEqual(entries[0].reason, db.REASON_PRIZE)
+        self.assertEqual(entries[0].delta, 50)
+        self.assertIn(str(gid), entries[0].note)
+
+    async def test_no_point_prize_means_no_points(self):
+        gid = self._make(point_prize=0, winners=1)
+        await service.finish(self.bot, gid)
+        winner = db.winners(gid)[0].user_id
+        self.assertEqual(db.point_balance(-100, winner), 0)
+
+    async def test_result_message_mentions_points(self):
+        gid = self._make(point_prize=80, winners=1)
+        await service.finish(self.bot, gid)
+        self.assertIn("80", self.bot.sent[-1])
+        self.assertIn("积分", self.bot.sent[-1])
+
+    async def test_reroll_pays_the_new_winner(self):
+        gid = self._make(point_prize=30, winners=1)
+        await service.finish(self.bot, gid)
+        first = db.winners(gid)[0].user_id
+        await service.reroll(self.bot, gid)
+        second = db.winners(gid)[0].user_id
+        self.assertNotEqual(first, second)
+        self.assertEqual(db.point_balance(-100, second), 30, "重抽出来的人也要拿到分")
+        self.assertEqual(db.point_balance(-100, first), 30, "上一轮已发的不收回")

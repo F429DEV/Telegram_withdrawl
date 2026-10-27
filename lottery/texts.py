@@ -38,6 +38,13 @@ def set_timezone(name: str) -> None:
         _TZ = "Asia/Shanghai"
 
 
+def prize_label(g: db.Giveaway, placeholder: str = "（未填写奖品）") -> str:
+    """奖品栏和积分奖品二选一，这里统一出一个展示用的名字（已转义）。"""
+    if g.point_prize > 0:
+        return f"{g.point_prize} 积分"
+    return esc(g.prize) if g.prize else placeholder
+
+
 def esc(s: Optional[str]) -> str:
     return html.escape(s or "", quote=False)
 
@@ -105,7 +112,7 @@ def _requirements(g: db.Giveaway) -> list[str]:
 
 
 def card(g: db.Giveaway, count: int) -> str:
-    prize = esc(g.prize) or "（未填写奖品）"
+    prize = prize_label(g)
     parts = [f"🎁 <b>{prize}</b>", ""]
     if g.mode == db.MODE_BUTTON:
         parts.append("参与方式：点下面的「我要参与」按钮")
@@ -122,6 +129,8 @@ def card(g: db.Giveaway, count: int) -> str:
         parts.append("参与方式：在本群正常聊天即可，开奖时随机抽一条消息，发这条的人中奖")
         parts.append("说得越多，被抽中的机会越大")
     parts.append(f"🏆 名额：{g.winners_count} 名")
+    if g.point_prize > 0:
+        parts.append(f"🏅 中奖者各得 <b>{g.point_prize}</b> 积分，开奖后直接记入本群积分")
     if g.invite_weight:
         parts.append(f"👥 每邀请 1 位新成员进群，中奖权重 +{g.invite_weight}")
     parts.extend(_conditions(g))
@@ -139,7 +148,7 @@ def result(
     quotes: Optional[dict] = None,
     chat_id: Optional[int] = None,
 ) -> str:
-    prize = esc(g.prize) or "（未填写奖品）"
+    prize = prize_label(g)
     if not wins:
         return (
             f"🎁 <b>{prize}</b>\n\n"
@@ -161,6 +170,9 @@ def result(
             link = message_link(chat_id, quoted.message_id) if chat_id else None
             tail = f' <a href="{link}">跳转</a>' if link else ""
             lines.append(f"　　💬 <i>{excerpt}</i>{tail}")
+    if g.point_prize > 0:
+        lines.append("")
+        lines.append(f"🏅 每人 <b>{g.point_prize}</b> 积分已记入本群积分，发「我的积分」可查")
     lines.append("")
     lines.append(f"<i>编号 #{g.id}　用 /verify {g.id} 看结果</i>")
     return "\n".join(lines)
@@ -176,7 +188,7 @@ def manual_result(prize: str, wins: list[str], total: int, seed: str = "") -> st
 # ---------------------------------------------------------------- 草稿卡片
 
 def draft_card(g: db.Giveaway) -> str:
-    prize = esc(g.prize) if g.prize else "<i>还没填，点「✏️ 奖品」设置</i>"
+    prize = prize_label(g, "<i>还没填，点「✏️ 奖品」或「🏅 积分奖品」设置</i>")
     lines = [
         "🛠 <b>新建抽奖</b>（只有你能看到这些按钮的操作权限）",
         "",
@@ -198,6 +210,8 @@ def draft_card(g: db.Giveaway) -> str:
         lines.append("时长：不限时")
     lines.append(f"人数上限：{g.max_participants} 人自动开奖" if g.max_participants else "人数上限：不限")
     lines.append(f"邀请加成：每邀 1 人 +{g.invite_weight} 权重" if g.invite_weight else "邀请加成：关")
+    if g.point_prize > 0:
+        lines.append(f"<i>奖品是 {g.point_prize} 积分，开奖后自动入账。设文字奖品会把它清掉。</i>")
     reqs = _requirements(g)
     lines.append("门槛：" + ("；".join(r[2:] for r in reqs) if reqs else "无"))
     lines.append("")
@@ -268,6 +282,10 @@ HELP_LOTTERY = (
     "• 积分：抽奖期间正常聊天自动参与，发言越多权重越高，不设上限\n"
     "• 消息：开奖时随机抽一条消息，发这条的人中奖\n"
     "• 名单：管理员贴一份名单，直接抽\n\n"
+    "<b>奖品：文字 或 积分</b>\n"
+    "「✏️ 奖品」写实物/虚拟奖品的名字，「🏅 积分奖品」直接发积分。\n"
+    "两者<b>二选一</b>，设一个会把另一个清掉。积分奖品开奖后自动入账，\n"
+    "走的是和签到、发言同一套积分，中奖者发「我的积分」就能看到。\n\n"
     "<b>邀请加成</b>\n"
     "创建时点「👥 邀请加成」，每邀请 1 人进群权重 +N。\n"
     "参与者发 /invite 拿专属链接，别人从那条链接进群才算数。\n\n"
@@ -279,7 +297,8 @@ HELP_POINTS = (
     "积分<b>按群独立</b>，A 群攒的分只能在 A 群花。\n\n"
     "<b>怎么攒</b>\n"
     "• 发言 —— 每条有效发言给 N 分，管理员可调\n"
-    "• 签到 —— 群里发「签到」或 /checkin，每天一次\n\n"
+    "• 签到 —— 群里发「签到」或 /checkin，每天一次\n"
+    "• 中抽奖 —— 抽奖的奖品设成「🏅 积分奖品」时，中奖者直接入账\n\n"
     "<b>怎么查</b>\n"
     "• 发「我的积分」或 /mypoints —— 余额、累计、群内排名、今日进度\n"
     "• 发「排行榜」或 /top —— 前 10 名\n\n"
@@ -315,6 +334,11 @@ NOT_GROUP = "这个命令要在群里用。把我加到群里，然后在群里�
 NOT_ADMIN = "只有群管理员能发起 / 管理抽奖。"
 NO_DRAFT = "没找到你的草稿，重新发 /new 吧。"
 PRIZE_PROMPT = "请<b>回复这条消息</b>，告诉我奖品是什么（60 秒内有效）。"
+POINT_PRIZE_PROMPT = (
+    "请<b>回复这条消息</b>，输入每位中奖者能拿到的<b>积分</b>数，例如：<code>100</code>\n"
+    "<i>开奖后自动记入本群积分，中奖者发「我的积分」就能看到。</i>\n"
+    "<i>积分奖品和文字奖品二选一 —— 设了这个会把奖品栏清空。填 0 取消。</i>"
+)
 KEYWORD_PROMPT = (
     "请<b>回复这条消息</b>，输入参与口令。\n"
     "想设多个就用空格或逗号分开，发中<b>任意一个</b>都算参与，例如：\n"

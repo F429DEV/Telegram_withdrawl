@@ -175,3 +175,47 @@ class TestRankAndLedger(PointsBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAdminAdjust(PointsBase):
+    """主人手动调分：带备注、记进流水、不许扣成负数。"""
+
+    def test_adjust_with_note(self):
+        db.add_points(self.CHAT, 1, 50, db.REASON_CHAT)
+        after = db.add_points(self.CHAT, 1, 100, db.REASON_ADMIN, note="补发上次漏的")
+        self.assertEqual(after, 150)
+        entry = db.point_ledger(self.CHAT, 1)[0]
+        self.assertEqual((entry.delta, entry.reason, entry.note),
+                         (100, db.REASON_ADMIN, "补发上次漏的"))
+
+    def test_deduct_clamped_at_zero(self):
+        db.add_points(self.CHAT, 1, 30, db.REASON_CHAT)
+        after = db.add_points(self.CHAT, 1, -100, db.REASON_ADMIN, note="误领扣回")
+        self.assertEqual(after, 0)
+        entry = db.point_ledger(self.CHAT, 1)[0]
+        self.assertEqual(entry.delta, -30, "流水记实际扣掉的数，不是填的数")
+
+    def test_note_is_optional(self):
+        db.add_points(self.CHAT, 1, 10, db.REASON_ADMIN)
+        self.assertEqual(db.point_ledger(self.CHAT, 1)[0].note, "")
+
+    def test_ledger_is_newest_first_and_capped(self):
+        for i in range(20):
+            db.add_points(self.CHAT, 1, 1, db.REASON_CHAT, note=f"第{i}笔")
+        entries = db.point_ledger(self.CHAT, 1, limit=5)
+        self.assertEqual(len(entries), 5)
+        self.assertEqual(entries[0].note, "第19笔")
+
+    def test_known_chats_collects_every_source(self):
+        db.add_points(-11, 1, 1, db.REASON_CHAT)
+        db.create_draft(-22, 1, {"prize": "x"})
+        db.save_point_settings(-33, per_message=1)
+        db.save_chat_settings(-44, admin_only=False)
+        self.assertEqual(db.known_chats(), [-44, -33, -22, -11], "按群 ID 升序，不含没记录的群")
+
+    def test_find_wallet_by_username(self):
+        db.add_points(self.CHAT, 7, 5, db.REASON_CHAT, "ZhangSan", "张三")
+        found = db.find_wallet_by_username(self.CHAT, "@zhangsan")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.user_id, 7)
+        self.assertIsNone(db.find_wallet_by_username(-999, "@zhangsan"), "跨群不该查到")

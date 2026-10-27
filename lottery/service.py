@@ -194,6 +194,15 @@ async def finish(bot: Bot, giveaway_id: int, *, reason: str = "") -> bool:
     db.save_winners(g.id, wins)
     g = db.get(g.id)
 
+    # 积分奖品：直接记入本群积分钱包，走的是和签到、发言同一套账
+    if g.point_prize > 0:
+        for w in wins:
+            db.add_points(
+                g.chat_id, w.user_id, g.point_prize, db.REASON_PRIZE,
+                w.username, w.full_name, note=f"抽奖 #{g.id}",
+            )
+        log.info("抽奖 #%s 给 %s 位中奖者各发了 %s 积分", g.id, len(wins), g.point_prize)
+
     # 原卡片改成「已结束」
     if g.message_id:
         try:
@@ -249,6 +258,12 @@ async def reroll(bot: Bot, giveaway_id: int) -> bool:
     db.update(g.id, seed=seed)
     db.save_winners(g.id, wins)
     g = db.get(g.id)
+    if g.point_prize > 0:
+        for w in wins:
+            db.add_points(
+                g.chat_id, w.user_id, g.point_prize, db.REASON_PRIZE,
+                w.username, w.full_name, note=f"抽奖 #{g.id} 重抽",
+            )
     ephemeral.keep(
         await bot.send_message(
             chat_id=g.chat_id,

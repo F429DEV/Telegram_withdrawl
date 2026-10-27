@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS giveaways (
     min_seen_hours      INTEGER NOT NULL DEFAULT 0,
     weight_cap          INTEGER NOT NULL DEFAULT 0,   -- 已废弃：发言积分不再设上限
     invite_weight       INTEGER NOT NULL DEFAULT 0,   -- 每邀请 1 人加多少权重，0=不计
+    point_prize         INTEGER NOT NULL DEFAULT 0,   -- 中奖者各得多少积分，和 prize 二选一
     status              TEXT    NOT NULL DEFAULT 'draft',
     seed                TEXT,
     created_at          INTEGER NOT NULL,
@@ -113,6 +114,7 @@ CREATE TABLE IF NOT EXISTS point_logs (
     delta         INTEGER NOT NULL,
     reason        TEXT    NOT NULL,
     balance_after INTEGER NOT NULL,
+    note          TEXT,
     created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_point_logs_user ON point_logs(chat_id, user_id, id DESC);
@@ -306,6 +308,7 @@ class Giveaway:
     min_seen_hours: int
     weight_cap: int
     invite_weight: int
+    point_prize: int
     status: str
     seed: Optional[str]
     created_at: int
@@ -329,6 +332,7 @@ class Giveaway:
             min_seen_hours=row["min_seen_hours"],
             weight_cap=row["weight_cap"],
             invite_weight=row["invite_weight"],
+            point_prize=row["point_prize"],
             status=row["status"],
             seed=row["seed"],
             created_at=row["created_at"],
@@ -350,18 +354,27 @@ class Participant:
 _conn: Optional[sqlite3.Connection] = None
 
 
-# 版本升级时给老库补上的列：列名 -> 建列语句
-_ADDED_COLUMNS = {
-    "invite_weight": "ALTER TABLE giveaways ADD COLUMN invite_weight INTEGER NOT NULL DEFAULT 0",
+# 版本升级时给老库补上的列：表名 -> {列名: 列定义}
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "giveaways": {
+        "invite_weight": "INTEGER NOT NULL DEFAULT 0",
+        "point_prize": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "point_logs": {
+        "note": "TEXT",
+    },
 }
 
 
 def _migrate(connection: sqlite3.Connection) -> None:
     """CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，这里手动补。"""
-    have = {row["name"] for row in connection.execute("PRAGMA table_info(giveaways)")}
-    for column, sql in _ADDED_COLUMNS.items():
-        if column not in have:
-            connection.execute(sql)
+    for table, columns in _ADDED_COLUMNS.items():
+        have = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if not have:
+            continue  # 表还不存在，建表语句里已经带上了这些列
+        for column, definition in columns.items():
+            if column not in have:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     connection.commit()
 
 
@@ -461,7 +474,8 @@ def get_draft(chat_id: int, creator_id: int) -> Optional[Giveaway]:
 _UPDATABLE = {
     "message_id", "prize", "mode", "keyword", "winners_count", "end_at",
     "max_participants", "require_channels", "require_username",
-    "min_seen_hours", "weight_cap", "invite_weight", "status", "seed", "ended_at",
+    "min_seen_hours", "weight_cap", "invite_weight", "point_prize",
+    "status", "seed", "ended_at",
 }
 
 
@@ -905,6 +919,7 @@ REASON_CHECKIN = "checkin"
 REASON_REDEEM = "redeem"
 REASON_REFUND = "refund"
 REASON_ADMIN = "admin"
+REASON_PRIZE = "prize"
 
 
 @dataclass
@@ -970,8 +985,12 @@ def add_points(
     reason: str,
     username: Optional[str] = None,
     full_name: Optional[str] = None,
+    note: Optional[str] = None,
 ) -> int:
-    """加减积分，返回操作后的余额。余额不会被扣成负数。"""
+    """加减积分，返回操作后的余额。余额不会被扣成负数。
+
+    note 只写进流水，不对群成员展示 —— 主人手动调分时写在这里。
+    """
     row = conn().execute(
         "SELECT balance FROM points WHERE chat_id=? AND user_id=?", (chat_id, user_id)
     ).fetchone()
@@ -993,9 +1012,10 @@ def add_points(
         (chat_id, user_id, after, earned, username, full_name, now(), earned),
     )
     _exec(
-        "INSERT INTO point_logs (chat_id, user_id, delta, reason, balance_after, created_at) "
-        "VALUES (?,?,?,?,?,?)",
-        (chat_id, user_id, real_delta, reason, after, now()),
+        "INSERT INTO point_logs "
+        "(chat_id, user_id, delta, reason, balance_after, note, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (chat_id, user_id, real_delta, reason, after, (note or None), now()),
     )
     return after
 
@@ -1044,6 +1064,61 @@ def point_top(chat_id: int, limit: int = 10) -> list[Wallet]:
                r["username"], r["full_name"] or "")
         for r in rows
     ]
+
+
+@dataclass
+class LedgerEntry:
+    delta: int
+    reason: str
+    balance_after: int
+    note: str
+    created_at: int
+
+
+REASON_LABEL = {
+    REASON_CHAT: "发言",
+    REASON_CHECKIN: "签到",
+    REASON_REDEEM: "兑换",
+    REASON_REFUND: "退单",
+    REASON_PRIZE: "抽奖奖品",
+    REASON_ADMIN: "手动调整",
+}
+
+
+def point_ledger(chat_id: int, user_id: int, limit: int = 15) -> list[LedgerEntry]:
+    rows = conn().execute(
+        "SELECT delta, reason, balance_after, note, created_at FROM point_logs "
+        "WHERE chat_id=? AND user_id=? ORDER BY id DESC LIMIT ?",
+        (chat_id, user_id, limit),
+    ).fetchall()
+    return [
+        LedgerEntry(int(r["delta"]), r["reason"], int(r["balance_after"]),
+                    r["note"] or "", int(r["created_at"]))
+        for r in rows
+    ]
+
+
+def known_chats() -> list[int]:
+    """机器人见过的群：有积分记录的、有抽奖的、改过设置的，都算。"""
+    rows = conn().execute(
+        """SELECT chat_id FROM points
+           UNION SELECT chat_id FROM giveaways
+           UNION SELECT chat_id FROM point_settings
+           UNION SELECT chat_id FROM chat_settings"""
+    ).fetchall()
+    return sorted({int(r["chat_id"]) for r in rows})
+
+
+def find_wallet_by_username(chat_id: int, username: str) -> Optional[Wallet]:
+    row = conn().execute(
+        "SELECT user_id, balance, total_earned, username, full_name FROM points "
+        "WHERE chat_id=? AND LOWER(username)=LOWER(?) LIMIT 1",
+        (chat_id, username.lstrip("@")),
+    ).fetchone()
+    if row is None:
+        return None
+    return Wallet(row["user_id"], int(row["balance"]), int(row["total_earned"]),
+                  row["username"], row["full_name"] or "")
 
 
 # ---------------------------------------------------------------- 每日计数

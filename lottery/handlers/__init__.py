@@ -53,6 +53,12 @@ def register(app: Application) -> None:
     app.add_handler(
         CommandHandler("unreserve", owner.unreserve_cmd, filters=filters.ChatType.PRIVATE)
     )
+    app.add_handler(
+        CommandHandler("adjust", owner.adjust_cmd, filters=filters.ChatType.PRIVATE)
+    )
+    app.add_handler(
+        CommandHandler("ledger", owner.ledger_cmd, filters=filters.ChatType.PRIVATE)
+    )
 
     # ---- 内联按钮 ----
     app.add_handler(CallbackQueryHandler(create.draft_callback, pattern=r"^d:\d+:"))

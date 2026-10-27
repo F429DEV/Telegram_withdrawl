@@ -131,12 +131,12 @@ async def viewmyinfo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             total = sum(p.weight for p in people) or 1
             share = me.weight / total * 100
             mine.append(
-                f"#{g.id}「{texts.esc(g.prize)}」权重 {me.weight}"
+                f"#{g.id}「{texts.prize_label(g)}」权重 {me.weight}"
                 f"，占全场约 {share:.1f}%"
             )
         else:
             mine.append(
-                f"#{g.id}「{texts.esc(g.prize)}」已报名"
+                f"#{g.id}「{texts.prize_label(g)}」已报名"
                 f"（{len(people)} 人参与，人人机会均等）"
             )
     if mine:

@@ -239,7 +239,7 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             db.add_participant(g.id, user.id, user.username, user.full_name)
             count = db.participant_count(g.id)
             await msg.reply_text(
-                f"✅ 已记下，你是第 {count} 位参与 #{g.id}「{texts.esc(g.prize)}」的人。",
+                f"✅ 已记下，你是第 {count} 位参与 #{g.id}「{texts.prize_label(g)}」的人。",
                 parse_mode=ParseMode.HTML,
             )
             g = db.get(g.id)

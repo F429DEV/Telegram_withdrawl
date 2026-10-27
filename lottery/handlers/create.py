@@ -188,6 +188,9 @@ async def draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif action == "prize":
         await _ask(context, query, g, "prize", texts.PRIZE_PROMPT)
         return
+    elif action == "ppoints":
+        await _ask(context, query, g, "point_prize", texts.POINT_PRIZE_PROMPT)
+        return
     elif action == "keyword":
         await _ask(context, query, g, "keyword", texts.KEYWORD_PROMPT)
         return
@@ -246,8 +249,16 @@ async def requirement_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def _publish(update: Update, context: ContextTypes.DEFAULT_TYPE, g: db.Giveaway) -> None:
     query = update.callback_query
-    if not g.prize.strip():
-        await query.answer("先点「✏️ 奖品」写上抽什么。", show_alert=True)
+    if not g.prize.strip() and g.point_prize <= 0:
+        await query.answer(
+            "先点「✏️ 奖品」写上抽什么，或者点「🏅 积分奖品」设积分。", show_alert=True
+        )
+        return
+    if g.point_prize > 0 and not db.point_settings(g.chat_id)["enabled"]:
+        await query.answer(
+            "本群的积分功能还没开，中奖者领不到分。先去 /settings → 🏅 积分设置 打开。",
+            show_alert=True,
+        )
         return
     if g.mode == db.MODE_KEYWORD and not g.keywords:
         await query.answer("口令玩法要先点「🔑 口令」设置口令。", show_alert=True)
@@ -305,7 +316,15 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     field = info["field"]
 
     if field == "prize":
-        db.update(g.id, prize=value[:200])
+        # 奖品栏和积分奖品二选一，设了文字奖品就把积分奖品清掉
+        db.update(g.id, prize=value[:200], point_prize=0)
+    elif field == "point_prize":
+        amount = int(value) if value.isdigit() else 0
+        amount = max(0, min(1_000_000, amount))
+        if amount > 0:
+            db.update(g.id, point_prize=amount, prize="")
+        else:
+            db.update(g.id, point_prize=0)
     elif field == "keyword":
         # 空格、逗号、顿号、分号都能用来分隔多个口令
         words = db.clean_keywords(re.split(r"[\s,，、;；]+", value)) if value else []

@@ -80,7 +80,7 @@ async def _list_active(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         held = db.reservation_count(g.id)
         mark = f"　已预留 {held}" if held else ""
         lines.append(
-            f"#{g.id}　{texts.esc(g.prize) or '(无名)'}　"
+            f"#{g.id}　{texts.prize_label(g, '(无名)')}　"
             f"[{texts.esc(title)}]　{g.winners_count} 个名额{mark}"
         )
     lines += ["", USAGE]
@@ -94,7 +94,7 @@ async def _show(update: Update, g: db.Giveaway) -> None:
     lines = [
         f"📌 <b>抽奖 #{g.id} 的预留名额</b>",
         "",
-        f"奖品：{texts.esc(g.prize)}",
+        f"奖品：{texts.prize_label(g)}",
         f"名额：{g.winners_count}　已预留：{len(held)}",
     ]
     if held:
@@ -175,3 +175,168 @@ async def unreserve_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.effective_message.reply_text("这个人本来就没在预留名单里。")
         return
     await _show(update, db.get(g.id))
+
+# ================================================================ 手动调整积分
+
+ADJUST_USAGE = (
+    "🛠 <b>手动调整积分</b>\n\n"
+    "<code>/adjust</code> —— 列出机器人见过的群和编号\n"
+    "<code>/adjust &lt;群ID&gt; &lt;用户ID或@用户名&gt; &lt;±数量&gt; [备注]</code>\n\n"
+    "例：<code>/adjust -1001234567890 123456789 +100 补发上次漏的</code>\n"
+    "例：<code>/adjust -1001234567890 @someone -50 误领扣回</code>\n\n"
+    "<code>/ledger &lt;群ID&gt; &lt;用户&gt;</code> —— 查这个人的积分流水（含备注）\n\n"
+    "<i>调整不会通知对方，备注只记在流水里，只有你能看到。</i>"
+)
+
+
+async def _resolve_member(bot, chat_id: int, raw: str) -> Optional[tuple]:
+    """把 @用户名 或数字 ID 解析成 (user_id, 显示名, 用户名)。"""
+    raw = raw.strip()
+    if raw.lstrip("-").isdigit():
+        user_id = int(raw)
+        found = db.wallet(chat_id, user_id)
+        if found:
+            return found.user_id, found.full_name, found.username
+        try:
+            member = await bot.get_chat_member(chat_id, user_id)
+            return member.user.id, member.user.full_name, member.user.username
+        except TelegramError:
+            return user_id, str(user_id), None
+
+    found = db.find_wallet_by_username(chat_id, raw)
+    if found:
+        return found.user_id, found.full_name, found.username
+    # 没有积分记录的人，再去抽奖参与者里翻一下
+    participant = db.find_user_by_username(chat_id, raw)
+    if participant:
+        return participant.user_id, participant.full_name, participant.username
+    return None
+
+
+async def _list_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chats = db.known_chats()
+    if not chats:
+        await update.effective_message.reply_text(
+            "机器人还没在任何群里有记录。\n\n" + ADJUST_USAGE, parse_mode=ParseMode.HTML
+        )
+        return
+    lines = ["📋 <b>机器人见过的群</b>", ""]
+    for chat_id in chats[:20]:
+        title = await _chat_title(context.bot, chat_id)
+        pt = db.point_settings(chat_id)
+        state = "积分已开" if pt["enabled"] else "积分未开"
+        lines.append(f"<code>{chat_id}</code>　{texts.esc(title)}　{state}")
+    lines += ["", ADJUST_USAGE]
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True
+    )
+
+
+async def adjust_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update, context):
+        return
+    msg = update.effective_message
+    args = list(context.args or [])
+
+    if not args:
+        await _list_chats(update, context)
+        return
+    if len(args) < 3:
+        await msg.reply_text(ADJUST_USAGE, parse_mode=ParseMode.HTML)
+        return
+
+    raw_chat, raw_user, raw_delta = args[0], args[1], args[2]
+    note = " ".join(args[3:]).strip()[:200]
+
+    if not raw_chat.lstrip("-").isdigit():
+        await msg.reply_text("群 ID 要是数字，超级群是 -100 开头。发 /adjust 看列表。")
+        return
+    chat_id = int(raw_chat)
+
+    try:
+        delta = int(raw_delta.replace("＋", "+").lstrip("+"))
+    except ValueError:
+        await msg.reply_text("数量要写成 +100 或 -50 这样。")
+        return
+    if delta == 0:
+        await msg.reply_text("加 0 分没有意义。")
+        return
+
+    target = await _resolve_member(context.bot, chat_id, raw_user)
+    if target is None:
+        await msg.reply_text(
+            "这个群里找不到这个人。用户名只能查到有积分记录或参与过抽奖的人，"
+            "查不到就让他发一句 /viewmyinfo 报出数字 ID，再用 ID 调。"
+        )
+        return
+    user_id, name, username = target
+
+    before = db.point_balance(chat_id, user_id)
+    after = db.add_points(
+        chat_id, user_id, delta, db.REASON_ADMIN, username, name, note=note or None
+    )
+    real = after - before
+    title = await _chat_title(context.bot, chat_id)
+
+    lines = [
+        "✅ <b>已调整</b>",
+        "",
+        f"群：{texts.esc(title)}",
+        f"对象：{texts.esc(name)}" + (f"（@{texts.esc(username)}）" if username else "")
+        + f"　<code>{user_id}</code>",
+        f"变动：{real:+d} 分（{before} → {after}）",
+    ]
+    if real != delta:
+        lines.append(f"<i>你填的是 {delta:+d}，余额不能扣成负数，实际只扣到 0。</i>")
+    if note:
+        lines.append(f"备注：{texts.esc(note)}")
+    lines += ["", "<i>没有通知对方。备注只在流水里，群成员看不到。</i>"]
+    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    log.info("主人调整积分：群 %s 用户 %s %+d 分（%s）", chat_id, user_id, real, note or "无备注")
+
+
+async def ledger_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update, context):
+        return
+    msg = update.effective_message
+    args = list(context.args or [])
+    if len(args) < 2 or not args[0].lstrip("-").isdigit():
+        await msg.reply_text(
+            "用法：<code>/ledger &lt;群ID&gt; &lt;用户ID或@用户名&gt; [条数]</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    chat_id = int(args[0])
+    target = await _resolve_member(context.bot, chat_id, args[1])
+    if target is None:
+        await msg.reply_text("这个群里找不到这个人。")
+        return
+    user_id, name, username = target
+    limit = int(args[2]) if len(args) > 2 and args[2].isdigit() else 15
+    limit = max(1, min(50, limit))
+
+    entries = db.point_ledger(chat_id, user_id, limit)
+    title = await _chat_title(context.bot, chat_id)
+    lines = [
+        f"📒 <b>积分流水</b>　{texts.esc(name)}",
+        "",
+        f"群：{texts.esc(title)}",
+        f"当前余额：<b>{db.point_balance(chat_id, user_id)}</b> 分　<code>{user_id}</code>",
+        "",
+    ]
+    if not entries:
+        lines.append("还没有任何积分记录。")
+    else:
+        for e in entries:
+            label = db.REASON_LABEL.get(e.reason, e.reason)
+            lines.append(
+                f"{texts.fmt_time(e.created_at)}　<b>{e.delta:+d}</b>　"
+                f"{label}　余额 {e.balance_after}"
+            )
+            if e.note:
+                lines.append(f"　　└ {texts.esc(e.note)}")
+    await msg.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True
+    )
+

@@ -45,7 +45,20 @@ def draft_kb(g: db.Giveaway, remaining: int | None) -> Markup:
             )
         ]
     )
-    third = [Btn("✏️ 奖品", callback_data=f"d:{g.id}:prize")]
+    # 奖品栏和积分奖品并排，二选一
+    rows.append(
+        [
+            Btn(
+                "✏️ 奖品 ✓" if g.prize.strip() else "✏️ 奖品",
+                callback_data=f"d:{g.id}:prize",
+            ),
+            Btn(
+                f"🏅 积分奖品：{g.point_prize}" if g.point_prize > 0 else "🏅 积分奖品",
+                callback_data=f"d:{g.id}:ppoints",
+            ),
+        ]
+    )
+    third = []
     if g.mode == db.MODE_KEYWORD:
         third.append(Btn("🔑 口令", callback_data=f"d:{g.id}:keyword"))
     third.append(Btn("🔒 门槛", callback_data=f"d:{g.id}:req"))
