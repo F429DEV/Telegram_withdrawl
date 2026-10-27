@@ -417,3 +417,74 @@ class TestMessageMode(unittest.IsolatedAsyncioTestCase):
         ids = [w.user_id for w in db.winners(gid)]
         self.assertEqual(ids[0], 99)
         self.assertEqual(len(ids), 2)
+
+
+class TestRestartRecovery(unittest.IsolatedAsyncioTestCase):
+    """重启后的补开与心跳。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        db.init(Path(self.tmp.name) / "r2.db")
+        self.bot = FakeBot()
+
+    def tearDown(self):
+        db.conn().close()
+        db._conn = None
+        self.tmp.cleanup()
+
+    def _app(self, jq=None):
+        return SimpleNamespace(bot=self.bot, job_queue=jq)
+
+    def _active(self, end_at, prize="会员卡"):
+        gid = db.create_draft(-100, 1, {"prize": prize, "winners_count": 1})
+        db.update(gid, status=db.STATUS_ACTIVE, message_id=1, end_at=end_at)
+        db.add_participant(gid, 7, None, "甲")
+        return gid
+
+    async def test_overdue_giveaways_are_reported(self):
+        overdue = self._active(db.now() - 3600, "迟到的")
+        caught = await service.restore_jobs(self._app())
+        self.assertEqual([g.id for g in caught], [overdue])
+        self.assertEqual(db.get(overdue).status, db.STATUS_ENDED)
+
+    async def test_future_giveaways_are_not_reported(self):
+        """没到点的只是重新挂上定时，不算补开。"""
+        future = self._active(db.now() + 3600, "还没到点")
+
+        class JQ:
+            def __init__(self): self.jobs = []
+            def run_once(self, cb, when, data=None, name=None):
+                self.jobs.append(name); return SimpleNamespace(schedule_removal=lambda: None)
+            def get_jobs_by_name(self, n): return []
+
+        jq = JQ()
+        caught = await service.restore_jobs(self._app(jq))
+        self.assertEqual(caught, [])
+        self.assertEqual(db.get(future).status, db.STATUS_ACTIVE)
+        self.assertEqual(len(jq.jobs), 1, "该给未来的抽奖重新挂上定时任务")
+
+    async def test_no_end_time_is_untouched(self):
+        manual = self._active(None, "手动开奖的")
+        caught = await service.restore_jobs(self._app())
+        self.assertEqual(caught, [])
+        self.assertEqual(db.get(manual).status, db.STATUS_ACTIVE)
+
+    async def test_heartbeat_written_only_on_api_success(self):
+        hb = Path(self.tmp.name) / "heartbeat"
+
+        class OkBot:
+            async def get_me(self): return SimpleNamespace(username="x")
+
+        class DeadBot:
+            async def get_me(self): raise BadRequest("network down")
+
+        ctx = SimpleNamespace(bot=OkBot(), job=SimpleNamespace(data={"path": hb}))
+        await service._heartbeat_job(ctx)
+        self.assertTrue(hb.exists(), "API 调通了就该写心跳")
+        first = hb.read_text()
+
+        hb.write_text("0")
+        ctx = SimpleNamespace(bot=DeadBot(), job=SimpleNamespace(data={"path": hb}))
+        await service._heartbeat_job(ctx)
+        self.assertEqual(hb.read_text(), "0", "API 调不通就不该刷新心跳")
+        self.assertTrue(first.isdigit())

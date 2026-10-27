@@ -36,6 +36,8 @@ class Config:
     log_max_mb: int = 10
     log_backups: int = 5
     ephemeral_seconds: int = 30
+    heartbeat_file: Optional[Path] = None
+    heartbeat_seconds: int = 60
 
     @classmethod
     def load(cls) -> "Config":
@@ -61,7 +63,21 @@ class Config:
             log_max_mb=int(os.getenv("LOG_MAX_MB", "10") or 10),
             log_backups=int(os.getenv("LOG_BACKUPS", "5") or 5),
             ephemeral_seconds=int(os.getenv("EPHEMERAL_SECONDS", "30") or 0),
+            heartbeat_file=cls._under_base(os.getenv("HEARTBEAT_FILE", "run/heartbeat")),
+            heartbeat_seconds=int(os.getenv("HEARTBEAT_SECONDS", "60") or 0),
         )
+
+    @staticmethod
+    def _under_base(raw: str) -> Optional[Path]:
+        """相对路径按项目目录解析；空字符串表示不要这个文件。"""
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        path = Path(raw)
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
 
     @staticmethod
     def _log_file(raw: str) -> Optional[Path]:

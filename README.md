@@ -310,9 +310,13 @@ Windows 双击 `start.bat` 是一样的效果，跑完不会立刻关窗，方�
 ./ctl.sh status       # 看是否在跑、PID、运行时长、内存、最近 5 行日志
 ./ctl.sh log          # 实时跟日志，Ctrl+C 退出（不影响机器人）
 ./ctl.sh tail 200     # 看最近 200 行
+./ctl.sh health       # 健康检查：进程在跑 且 心跳新鲜
 ./ctl.sh restart      # 重启
 ./ctl.sh stop         # 停止（先 TERM，15 秒不退再 KILL）
 ```
+
+⚠️ 这样起的进程**服务器重启后不会自己回来**，崩了也没人拉。正式跑请看下面的
+「部署」装上 systemd —— 装完这几条命令会自动转发给 systemctl，用法不变。
 
 几个细节：
 
@@ -325,47 +329,79 @@ Windows 双击 `start.bat` 是一样的效果，跑完不会立刻关窗，方�
 - 想只看控制台不写文件，把 `.env` 里的 `LOG_FILE` 留空。
 - 想在终端里直接盯着输出跑，用上面的 `./start.sh`（但别和 `ctl.sh start` 同时开）。
 
-## 部署
-
-**Windows（开机自启）**：把 `start.bat` 做个快捷方式丢进
-`shell:startup`（Win+R 输入这个路径）。
-
-**Linux（systemd）**：比 `ctl.sh` 更稳，开机自启、崩溃自动拉起都归系统管。
-两者别同时用，选一个。
-
-先在项目目录里把虚拟环境建好，然后让 systemd 用 venv 里的 python：
-
-```ini
-# /etc/systemd/system/tg-lottery.service
-[Unit]
-Description=Telegram 抽奖机器人
-After=network-online.target
-
-[Service]
-WorkingDirectory=/opt/mrt_drawl
-ExecStart=/opt/mrt_drawl/.venv/bin/python /opt/mrt_drawl/bot.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
+## 部署（正式跑用这个）
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now tg-lottery
-sudo journalctl -u tg-lottery -f      # 看日志
+sudo ./deploy/install-systemd.sh
 ```
 
-进程重启后，没开的定时抽奖会自动重新挂上；重启期间已经过点的会立刻补开。
+装两套 unit，装完 `ctl.sh` 的 start/stop/restart/status 会自动转发给 systemctl，
+用法不变：
 
----
+| unit | 作用 |
+|---|---|
+| `tg-lottery.service` | 机器人本体。`Restart=always` + 开机自启 —— 进程崩了 5 秒拉起，服务器重启也会自己回来 |
+| `tg-lottery-health.timer` | 每 2 分钟跑一次 `./ctl.sh health`，不健康就重启本体 |
+
+### 为什么要第二套：进程活着 ≠ 机器人活着
+
+`Restart=always` 只管进程死掉。网络被掐、token 被撤的时候进程照样在跑，
+只是一条消息都收不到，systemd 看不出区别。
+
+所以机器人每 60 秒调一次 Telegram API，**调通了**才把时间戳写进 `run/heartbeat`。
+`./ctl.sh health` 的判断是「进程在跑 **且** 心跳在 3 个周期内」，两个条件都满足才算健康：
+
+```bash
+./ctl.sh health          # healthy / unhealthy: <原因>，退出码 0 / 1
+./ctl.sh status          # 状态里也会显示心跳是多久以前的
+```
+
+心跳的周期和路径在 `.env` 里：
+
+```
+HEARTBEAT_FILE=run/heartbeat
+HEARTBEAT_SECONDS=60        # 留空 HEARTBEAT_FILE 就是不要心跳
+```
+
+### 停机期间该开没开的抽奖
+
+机器人每次启动都会把「定时已经过点、但还没开奖」的场次补开，并且**把清单私信给
+`OWNER_IDS`**：
+
+```
+⚠️ 重启后补开了 2 场抽奖
+
+这几场本该在机器人停机期间开奖，刚才一并补开了：
+• #12「会员月卡」原定 2026-10-19 21:47，迟了 7 天 11 小时
+• #15「限量周边」原定 2026-10-27 05:47，迟了 3 小时
+
+中奖名单已经发到各群，奖品发放记得跟进。
+```
+
+停机唯一会留下后果的地方就是这个 —— 中奖名单迟到了，奖品还得人去发，
+所以它不只写日志，还要主动找你。没配 `OWNER_IDS` 的话只能记日志，配一下。
+
+### 排查
+
+```bash
+./ctl.sh log                              # 跟程序日志
+journalctl -u tg-lottery -f               # 跟 systemd 这边的记录（含重启事件）
+systemctl list-timers tg-lottery-health   # 健康检查下次什么时候跑
+```
+
+反复起不来时 systemd 不会无限刷：10 分钟内超过 10 次就停下等人看，
+`systemctl reset-failed tg-lottery` 清掉计数后再 start。
+
+**Windows（开机自启）**：把 `start.bat` 做个快捷方式丢进
+`shell:startup`（Win+R 输入这个路径）。Windows 上没有上面这套守护，
+前台窗口关掉机器人就停了。
 
 ## 目录结构
 
 ```
 bot.py                    入口：读配置、初始化日志、启动 polling
-ctl.sh                    启停脚本：start / stop / restart / status / log / tail
+ctl.sh                    启停脚本：start / stop / restart / status / health / log / tail
+deploy/install-systemd.sh 一条命令装成 systemd 服务（含健康检查 timer）
 start.sh / start.bat      前台运行（调试用，Ctrl+C 停止）
 lottery/
   config.py               环境变量 -> Config
@@ -385,6 +421,7 @@ data/lottery.db           运行时生成的数据库
 logs/bot.log              程序日志（滚动）
 logs/boot.log             启动阶段的兜底输出
 run/bot.pid               后台进程的 PID
+run/heartbeat             心跳时间戳，健康检查看它
 ```
 
 ---
@@ -397,7 +434,11 @@ run/bot.pid               后台进程的 PID
 
 **同一个人能报两次吗？** 不能，数据库主键就是 (抽奖, 用户)。
 
-**机器人重启会丢抽奖吗？** 不会，全都在 SQLite 里。只有「正在填一半的配置面板」会失效，重新 `/new` 就行。
+**机器人重启会丢抽奖吗？** 不会，全都在 SQLite 里。定时已经过点的会在启动时补开，
+清单私信给 `OWNER_IDS`。只有「正在填一半的配置面板」会失效，重新 `/new` 就行。
+
+**机器人停了好几天都没人发现怎么办？** 装上 systemd（见「部署」）。
+`ctl.sh start` 那种 nohup 方式起的进程，服务器一重启就没了，而且没有任何人会告诉你。
 
 **一个群能同时开几个？** 默认 5 个，改 `.env` 里的 `MAX_ACTIVE_PER_CHAT`。
 

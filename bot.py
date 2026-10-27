@@ -12,6 +12,8 @@ import logging
 import logging.handlers
 
 from telegram import BotCommand, BotCommandScopeAllGroupChats
+from telegram.constants import ParseMode
+from telegram.error import TelegramError
 from telegram.ext import Application, ContextTypes
 
 from lottery import db, ephemeral, handlers, service, texts
@@ -35,9 +37,57 @@ COMMANDS = [
 ]
 
 
+async def _notify_catch_up(app: Application, caught_up: list) -> None:
+    """机器人停机期间该开没开的抽奖，启动时补开了 —— 把清单私信给主人。
+
+    这是停机唯一会留下后果的地方：中奖名单迟到了，奖品还得人去发。
+    """
+    cfg = app.bot_data["config"]
+    if not caught_up:
+        return
+    if not cfg.owner_ids:
+        log.warning(
+            "启动时补开了 %s 场抽奖，但 .env 里没配 OWNER_IDS，没法通知任何人。",
+            len(caught_up),
+        )
+        return
+
+    now = db.now()
+    lines = [
+        f"⚠️ <b>重启后补开了 {len(caught_up)} 场抽奖</b>",
+        "",
+        "这几场本该在机器人停机期间开奖，刚才一并补开了：",
+    ]
+    for g in caught_up:
+        late = texts.fmt_duration(now - g.end_at) if g.end_at else "未知"
+        when = texts.fmt_time(g.end_at) if g.end_at else "未知"
+        lines.append(
+            f"• #{g.id}「{texts.esc(g.prize) or '未填奖品'}」"
+            f"原定 {when}，迟了 {late}"
+        )
+    lines += ["", "<i>中奖名单已经发到各群，奖品发放记得跟进。</i>"]
+    text = "\n".join(lines)
+
+    for owner_id in cfg.owner_ids:
+        try:
+            await app.bot.send_message(
+                chat_id=owner_id, text=text, parse_mode=ParseMode.HTML
+            )
+        except TelegramError as exc:
+            log.warning("补开清单发给主人 %s 失败: %s", owner_id, exc)
+
+
 async def _post_init(app: Application) -> None:
     await app.bot.set_my_commands(COMMANDS, scope=BotCommandScopeAllGroupChats())
-    await service.restore_jobs(app)
+    caught_up = await service.restore_jobs(app)
+    if caught_up:
+        log.warning("启动时补开了 %s 场过期抽奖", len(caught_up))
+        await _notify_catch_up(app, caught_up)
+
+    cfg = app.bot_data["config"]
+    if cfg.heartbeat_file:
+        service.start_heartbeat(app, cfg.heartbeat_file, cfg.heartbeat_seconds)
+
     me = await app.bot.get_me()
     log.info("机器人已启动：@%s（把它加进群，管理员发 /new 开始）", me.username)
 
@@ -90,6 +140,8 @@ def main() -> None:
     app.add_error_handler(_on_error)
 
     log.info("数据库：%s", cfg.db_path)
+    if cfg.heartbeat_file:
+        log.info("心跳文件：%s（每 %s 秒）", cfg.heartbeat_file, cfg.heartbeat_seconds)
     if cfg.ephemeral_seconds > 0:
         log.info("群消息自动清理：%s 秒（抽奖卡片 / 开奖结果 / 创建面板除外）",
                  cfg.ephemeral_seconds)

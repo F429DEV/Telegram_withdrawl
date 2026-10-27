@@ -284,6 +284,43 @@ async def cancel(bot: Bot, giveaway_id: int, note: str = "") -> bool:
     return True
 
 
+# ---------------------------------------------------------------- 心跳
+
+HEARTBEAT_JOB = "heartbeat"
+
+
+async def _heartbeat_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """调一次 get_me，成功才更新心跳文件。
+
+    进程活着不等于机器人活着 —— 网络断了、token 被撤了，进程照样在跑。
+    只有真的调通了 API 才写时间戳，外部的健康检查看这个文件判断要不要重启。
+    """
+    path = context.job.data["path"]
+    try:
+        await context.bot.get_me()
+    except TelegramError as exc:
+        log.warning("心跳失败，API 调不通: %s", exc)
+        return
+    try:
+        path.write_text(str(db.now()), encoding="utf-8")
+    except OSError as exc:
+        log.warning("心跳文件写不进去 %s: %s", path, exc)
+
+
+def start_heartbeat(app: Application, path, interval: int = 60) -> None:
+    if app.job_queue is None or interval <= 0:
+        return
+    for job in app.job_queue.get_jobs_by_name(HEARTBEAT_JOB):
+        job.schedule_removal()
+    app.job_queue.run_repeating(
+        _heartbeat_job,
+        interval=interval,
+        first=5,
+        data={"path": path},
+        name=HEARTBEAT_JOB,
+    )
+
+
 # ---------------------------------------------------------------- 调度
 
 async def _end_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -308,15 +345,22 @@ def unschedule(app: Application, giveaway_id: int) -> None:
         job.schedule_removal()
 
 
-async def restore_jobs(app: Application) -> None:
-    """进程重启后，把还没开奖的定时任务重新挂上；已经过期的立刻开奖。"""
+async def restore_jobs(app: Application) -> list[db.Giveaway]:
+    """进程重启后，把还没开奖的定时任务重新挂上；已经过期的立刻开奖。
+
+    返回「本该早就开奖、这次启动才补开」的场次 —— 机器人躺过一段时间的话，
+    这个列表就是那段时间欠下的账，调用方会把它私信给主人。
+    """
+    caught_up: list[db.Giveaway] = []
     for g in db.all_active():
         if not g.end_at:
             continue
         if g.end_at <= db.now():
-            await finish(app.bot, g.id, reason="⏰ 机器人重启后补开")
+            if await finish(app.bot, g.id, reason="⏰ 机器人重启后补开"):
+                caught_up.append(g)
         else:
             schedule_end(app, g)
+    return caught_up
 
 
 async def maybe_finish_by_cap(bot: Bot, app: Application, g: db.Giveaway) -> bool:
