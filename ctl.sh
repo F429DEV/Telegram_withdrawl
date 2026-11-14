@@ -113,21 +113,36 @@ running_pid() {
     return 1
 }
 
+# 解释器在 ≠ 依赖在。
+# 线上真实踩过：.venv/bin/python 好好的，但 import telegram 失败
+# （依赖没装成功，或者系统 Python 升了小版本让 venv 里的 lib/pythonX.Y 对不上），
+# 机器人在第一行 import 就崩，systemd 一直拉一直崩。
+venv_ok() {
+    [ -x "$PY" ] || return 1
+    "$PY" -c "import telegram" >/dev/null 2>&1
+}
+
 ensure_env() {
     if [ ! -f .env ]; then
         red "没找到 .env。先执行：cp .env.example .env，然后填入 BOT_TOKEN"
         exit 1
     fi
-    if [ ! -x "$PY" ]; then
+    venv_ok && return 0
+
+    if [ -x "$PY" ]; then
+        ylw "虚拟环境里 import 不到 telegram，重建 $VENV ..."
+        rm -rf "$VENV"
+    else
         ylw "首次运行，正在创建虚拟环境 $VENV ..."
-        python3 -m venv "$VENV" || {
-            red "创建虚拟环境失败。Debian/Ubuntu 上先装：sudo apt install -y python3-venv python3-full"
-            exit 1
-        }
-        "$VENV/bin/pip" install --upgrade pip -q
-        "$VENV/bin/pip" install -r requirements.txt || { red "依赖安装失败"; exit 1; }
-        grn "虚拟环境就绪"
     fi
+    python3 -m venv "$VENV" || {
+        red "创建虚拟环境失败。Debian/Ubuntu 上先装：sudo apt install -y python3-venv python3-full"
+        exit 1
+    }
+    "$VENV/bin/pip" install --upgrade pip -q
+    "$VENV/bin/pip" install -r requirements.txt || { red "依赖安装失败"; exit 1; }
+    venv_ok || { red "装完还是 import 不到 telegram，先手查这个"; exit 1; }
+    grn "虚拟环境就绪"
 }
 
 # ---------------------------------------------------------------- 命令
@@ -151,6 +166,9 @@ verify_started() {
 
 start() {
     if use_systemd; then
+        # 交给 systemd 之前先自己确认环境没问题 ——
+        # 否则 systemd 只会一遍遍拉起一个必崩的进程
+        ensure_env
         rm -f "$(heartbeat_path)"
         systemctl start "${SERVICE}.service" || { red "systemctl start 失败"; return 1; }
         verify_started
@@ -255,6 +273,11 @@ status() {
         fi
     fi
     heartbeat_report || true
+    if venv_ok; then
+        echo "  依赖     : 正常"
+    else
+        red "  依赖     : import telegram 失败 —— 跑 ./ctl.sh start 会自动重建 venv"
+    fi
     if [ -f "$LOG_FILE" ]; then
         echo "  日志文件 : $LOG_FILE（$(du -h "$LOG_FILE" | cut -f1)）"
         echo ""
@@ -328,6 +351,7 @@ case "${1:-}" in
     stop)    stop ;;
     restart)
         if use_systemd; then
+            ensure_env
             rm -f "$(heartbeat_path)"
             systemctl restart "${SERVICE}.service" || { red "systemctl restart 失败"; exit 1; }
             verify_started

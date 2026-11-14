@@ -550,9 +550,24 @@ HEARTBEAT_SECONDS=60        # 留空 HEARTBEAT_FILE 就是不要心跳
 ### 排查
 
 ```bash
+./ctl.sh status                           # 在不在跑、心跳、依赖是否正常
 ./ctl.sh log                              # 跟程序日志
 journalctl -u tg-lottery -f               # 跟 systemd 这边的记录（含重启事件）
 systemctl list-timers tg-lottery-health   # 健康检查下次什么时候跑
+```
+
+**`ModuleNotFoundError: No module named 'telegram'`** —— venv 里的依赖没了。
+解释器在、但 import 不到包，这种状态 `.venv/bin/python` 看起来一切正常，
+机器人却会在第一行 import 就崩，systemd 一直拉一直崩。常见原因是系统 Python
+升了小版本，venv 里的 `lib/pythonX.Y` 对不上了。
+
+`./ctl.sh start` / `restart` / `sudo ./deploy/install-systemd.sh` 现在都会先
+`import telegram` 验一下，不通就自动重建 venv 并重装依赖，所以照常跑就行。
+想手动修：
+
+```bash
+rm -rf .venv && python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
 反复起不来时 systemd 不会无限刷：10 分钟内超过 10 次就停下等人看，

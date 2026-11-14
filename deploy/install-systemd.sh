@@ -21,11 +21,24 @@ UNIT_DIR="/etc/systemd/system"
 [ "$(id -u)" -eq 0 ] || { echo "要用 root 跑：sudo $0"; exit 1; }
 [ -f "$PROJECT_DIR/.env" ] || { echo "没找到 $PROJECT_DIR/.env，先配好再装"; exit 1; }
 
-if [ ! -x "$PY" ]; then
-    echo "没找到 $PY，正在创建虚拟环境 ..."
+# 光看 .venv/bin/python 在不在是不够的：
+# 解释器在、但 import telegram 失败的情况真实发生过（依赖没装成功，
+# 或者系统 Python 升了小版本，venv 里的 lib/pythonX.Y 对不上了）。
+# 那种状态下机器人会在第一行 import 就崩，systemd 一直拉一直崩。
+if ! "$PY" -c "import telegram" >/dev/null 2>&1; then
+    if [ -x "$PY" ]; then
+        echo "虚拟环境里缺依赖（import telegram 失败），重建 .venv ..."
+        rm -rf "$PROJECT_DIR/.venv"
+    else
+        echo "没找到 $PY，正在创建虚拟环境 ..."
+    fi
     python3 -m venv "$PROJECT_DIR/.venv"
     "$PROJECT_DIR/.venv/bin/pip" install --upgrade pip -q
-    "$PROJECT_DIR/.venv/bin/pip" install -r "$PROJECT_DIR/requirements.txt"
+    "$PROJECT_DIR/.venv/bin/pip" install -r "$PROJECT_DIR/requirements.txt" \
+        || { echo "依赖安装失败，先解决这个再装服务"; exit 1; }
+    "$PY" -c "import telegram" >/dev/null 2>&1 \
+        || { echo "装完还是 import 不到 telegram，别装服务了，先手查"; exit 1; }
+    echo "依赖就绪"
 fi
 
 RUN_USER="${SUDO_USER:-root}"
@@ -38,6 +51,16 @@ cat > "$UNIT_DIR/${SERVICE}.service" <<UNIT
 Description=Telegram 抽奖机器人
 After=network-online.target
 Wants=network-online.target
+# 永不永久放弃。
+#
+# StartLimitIntervalSec 是 [Unit] 的键 —— 放在 [Service] 里 systemd 会直接
+# 忽略并打一行 "Unknown key"，设置形同没写。
+#
+# 之所以要关掉这个限制：原来「10 分钟内失败 10 次就进 failed」的后果更糟，
+# 开机时网络没就绪、机房抖一阵，连续失败十来次之后 unit 就再也不会自己回来，
+# 表面上 start 说在跑，实际躺了好几天没人发现。
+# 宁可一直重试刷日志，也不要静默长期掉线。
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -46,13 +69,6 @@ WorkingDirectory=$PROJECT_DIR
 ExecStart=$PY $PROJECT_DIR/bot.py
 Restart=always
 RestartSec=10
-# 永不永久放弃。
-#
-# 原来这里是「10 分钟内超过 10 次就停下等人来看」，但那个失败模式更糟：
-# 开机时网络没就绪、机房抖一阵，连续失败十来次之后 unit 进 failed 就再也不会
-# 自己回来 —— 表面上 start 说在跑，实际躺了好几天没人发现。
-# 宁可一直重试刷日志，也不要静默长期掉线。
-StartLimitIntervalSec=0
 # 配置错（token 无效）由 bot.py 用退出码 78 明确表示，这种情况不要再拉起来
 RestartPreventExitStatus=78
 KillSignal=SIGTERM
