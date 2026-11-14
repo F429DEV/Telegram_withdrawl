@@ -52,6 +52,51 @@ use_systemd() {
     systemctl cat "${SERVICE}.service" >/dev/null 2>&1
 }
 
+# systemd 的实际状态字符串：active / activating / inactive / failed ...
+unit_state() {
+    systemctl is-active "${SERVICE}.service" 2>/dev/null || true
+}
+
+# 服务「正在起或已经起来」都算在跑。
+# is-active --quiet 只认 active，activating（含 Restart 间隙的 auto-restart）会返回非零，
+# 拿它当健康判断会在刚重启那几秒误报，健康检查 timer 还会顺手把正在启动的服务重启掉。
+unit_up() {
+    case "$(unit_state)" in
+        active|activating|reloading) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 服务已经起来多少秒了。拿不到返回 -1。
+service_age() {
+    if use_systemd; then
+        local mono up
+        mono=$(systemctl show -p ActiveEnterTimestampMonotonic --value "${SERVICE}.service" 2>/dev/null)
+        case "$mono" in
+            ''|*[!0-9]*) echo -1; return ;;
+        esac
+        [ "$mono" -gt 0 ] || { echo -1; return; }
+        up=$(awk '{print int($1)}' /proc/uptime 2>/dev/null)
+        [ -n "$up" ] || { echo -1; return; }
+        echo $(( up - mono / 1000000 ))
+        return
+    fi
+    local pid
+    if pid=$(running_pid); then
+        ps -p "$pid" -o etimes= 2>/dev/null | tr -d ' ' || echo -1
+    else
+        echo -1
+    fi
+}
+
+# 心跳过期阈值
+heartbeat_limit() {
+    local limit
+    limit=$(( $(heartbeat_interval) * 3 ))
+    [ "$limit" -lt 180 ] && limit=180
+    echo "$limit"
+}
+
 # ---------------------------------------------------------------- 自带方式
 
 running_pid() {
@@ -87,10 +132,28 @@ ensure_env() {
 
 # ---------------------------------------------------------------- 命令
 
+# systemctl start/restart 返回只代表「命令收到了」。Type=simple 下进程
+# 起来就算 active，几秒后崩掉照样是 active 过。所以等一会儿再看一眼。
+verify_started() {
+    sleep 4
+    if unit_up && [ "$(unit_state)" = "active" ]; then
+        grn "$APP 运行中"
+        systemctl --no-pager --lines=0 status "${SERVICE}.service" | sed -n '2,4p'
+        echo "  日志：$LOG_FILE      （./ctl.sh log 实时查看）"
+        return 0
+    fi
+    red "$APP 没起来 —— 当前状态：$(unit_state)"
+    echo ""
+    echo "最近的日志："
+    journalctl -u "${SERVICE}.service" -n 15 --no-pager 2>/dev/null | sed 's/^/    /'
+    return 1
+}
+
 start() {
     if use_systemd; then
-        systemctl start "${SERVICE}.service" && grn "$APP 已交给 systemd 启动"
-        systemctl --no-pager --lines=0 status "${SERVICE}.service" | head -5
+        rm -f "$(heartbeat_path)"
+        systemctl start "${SERVICE}.service" || { red "systemctl start 失败"; return 1; }
+        verify_started
         return
     fi
 
@@ -132,6 +195,8 @@ start() {
 stop() {
     if use_systemd; then
         systemctl stop "${SERVICE}.service" && grn "$APP 已停止（systemd）"
+        # 心跳留着会让下次启动的前 3 分钟「看起来健康」，即使新进程根本没起来
+        rm -f "$(heartbeat_path)"
         return
     fi
 
@@ -198,28 +263,42 @@ status() {
     fi
 }
 
-# 健康 = 进程在跑 且 心跳新鲜。退出 0 健康，1 不健康。
-# 给 cron / systemd timer 用：./ctl.sh health --quiet || systemctl restart tg-lottery
+# 健康 = 服务在跑 且 心跳新鲜。退出 0 健康，1 不健康。
+# 给 systemd timer / cron 用：./ctl.sh health --quiet || systemctl restart tg-lottery
+#
+# 刚启动的那段时间心跳还没写出来，不能算不健康 —— 否则健康检查会把正在启动的
+# 服务一直重启，自己造出一个循环。所以心跳不新鲜时还要看服务起来多久了。
 health() {
     local quiet="${1:-}" ok=0 reason=""
 
     if use_systemd; then
-        systemctl is-active --quiet "${SERVICE}.service" || { ok=1; reason="服务不在运行"; }
+        unit_up || { ok=1; reason="服务状态是 $(unit_state)"; }
     else
         running_pid >/dev/null || { ok=1; reason="进程不在运行"; }
     fi
 
     if [ "$ok" -eq 0 ]; then
-        local hb interval age limit
-        hb=$(heartbeat_path); interval=$(heartbeat_interval)
-        limit=$(( interval * 3 )); [ "$limit" -lt 180 ] && limit=180
+        local hb limit age stale=0 svc_age
+        hb=$(heartbeat_path)
+        limit=$(heartbeat_limit)
         if [ -z "$hb" ]; then
-            :   # 没开心跳，只能看进程
+            stale=0          # 没开心跳，只能看服务状态
         elif [ ! -f "$hb" ]; then
-            ok=1; reason="没有心跳文件"
+            stale=1; reason="没有心跳文件"
         else
             age=$(( $(date +%s) - $(cat "$hb" 2>/dev/null || echo 0) ))
-            [ "$age" -gt "$limit" ] && { ok=1; reason="心跳停在 ${age} 秒前（阈值 ${limit} 秒）"; }
+            if [ "$age" -gt "$limit" ]; then
+                stale=1; reason="心跳停在 ${age} 秒前（阈值 ${limit} 秒）"
+            fi
+        fi
+
+        if [ "$stale" -eq 1 ]; then
+            svc_age=$(service_age)
+            if [ "$svc_age" -ge 0 ] && [ "$svc_age" -lt "$limit" ]; then
+                reason=""     # 还在启动宽限期内，先别判它死
+            else
+                ok=1
+            fi
         fi
     fi
 
@@ -249,7 +328,9 @@ case "${1:-}" in
     stop)    stop ;;
     restart)
         if use_systemd; then
-            systemctl restart "${SERVICE}.service" && grn "$APP 已重启（systemd）"
+            rm -f "$(heartbeat_path)"
+            systemctl restart "${SERVICE}.service" || { red "systemctl restart 失败"; exit 1; }
+            verify_started
         else
             stop; sleep 1; start
         fi

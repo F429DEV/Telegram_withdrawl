@@ -8,12 +8,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import logging.handlers
+import time
 
 from telegram import BotCommand, BotCommandScopeAllGroupChats
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import InvalidToken, NetworkError, TelegramError, TimedOut
 from telegram.ext import Application, ContextTypes
 
 from lottery import db, ephemeral, handlers, service, texts
@@ -125,13 +127,14 @@ def _setup_logging(cfg: Config) -> None:
     logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 
-def main() -> None:
-    cfg = Config.load()
-    _setup_logging(cfg)
+# token 不对这种错，重试一万次也没用：用这个退出码告诉 systemd 别再拉了
+EXIT_BAD_CONFIG = 78
 
-    db.init(cfg.db_path)
-    texts.set_timezone(cfg.display_tz)
+# 启动时网络不通的重试节奏（秒），超出列表长度就一直用最后一个值
+_RETRY_BACKOFF = [5, 10, 20, 30, 60, 60, 120]
 
+
+def _build(cfg: Config) -> Application:
     app = (
         Application.builder()
         .bot(ephemeral.EphemeralBot(cfg.bot_token))
@@ -142,6 +145,15 @@ def main() -> None:
     ephemeral.bind(app, cfg.ephemeral_seconds)
     handlers.register(app)
     app.add_error_handler(_on_error)
+    return app
+
+
+def main() -> None:
+    cfg = Config.load()
+    _setup_logging(cfg)
+
+    db.init(cfg.db_path)
+    texts.set_timezone(cfg.display_tz)
 
     log.info("数据库：%s", cfg.db_path)
     if cfg.heartbeat_file:
@@ -154,11 +166,40 @@ def main() -> None:
     if cfg.log_file:
         log.info("日志文件：%s（%s MB 滚动，保留 %s 份）",
                  cfg.log_file, cfg.log_max_mb, cfg.log_backups)
-    # chat_member 必须显式声明，否则收不到「谁通过哪条邀请链接进群」
-    app.run_polling(
-        allowed_updates=["message", "callback_query", "my_chat_member", "chat_member"],
-        drop_pending_updates=True,
-    )
+    # 启动阶段的网络错误要自己扛住。
+    #
+    # get_me 发生在 Application.initialize() 里，不在 PTB 任何重试范围内 ——
+    # 开机时网络还没真的就绪、DNS 慢一拍、机房抖一下，异常就会一路抛出来让进程退出。
+    # 再配上 systemd 的 StartLimitBurst，连续失败几次之后 unit 会永久放弃，
+    # 表现就是「start 说在跑，几秒后没了，而且再也不会自己回来」。
+    attempt = 0
+    while True:
+        try:
+            # run_polling 退出时会把事件循环关掉，所以每次重试都得换一个新的，
+            # 否则第二次会死在 "Event loop is closed"。
+            asyncio.set_event_loop(asyncio.new_event_loop())
+            # chat_member 必须显式声明，否则收不到「谁通过哪条邀请链接进群」
+            _build(cfg).run_polling(
+                allowed_updates=[
+                    "message", "callback_query", "my_chat_member", "chat_member",
+                ],
+                drop_pending_updates=True,
+            )
+            return  # 收到 SIGTERM/SIGINT 正常退出
+        except InvalidToken:
+            log.critical(
+                "BOT_TOKEN 无效，再重试也没有意义。"
+                "去 @BotFather 核对一下 token，改完 .env 再 ./ctl.sh restart。"
+            )
+            raise SystemExit(EXIT_BAD_CONFIG)
+        except (NetworkError, TimedOut) as exc:
+            delay = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+            attempt += 1
+            log.warning(
+                "连不上 Telegram（第 %s 次）：%s —— %s 秒后重试",
+                attempt, exc, delay,
+            )
+            time.sleep(delay)
 
 
 if __name__ == "__main__":

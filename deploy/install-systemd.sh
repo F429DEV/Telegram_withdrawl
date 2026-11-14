@@ -5,7 +5,7 @@
 #   sudo ./deploy/install-systemd.sh
 #
 # 装两套 unit：
-#   tg-lottery.service        机器人本体，Restart=always
+#   tg-lottery.service        机器人本体，Restart=always，永不永久放弃
 #   tg-lottery-health.timer   每 2 分钟跑一次健康检查，不健康就重启本体
 #
 # 为什么要第二套：Restart=always 只管进程死掉。进程活着但 API 已经调不通
@@ -45,10 +45,16 @@ User=$RUN_USER
 WorkingDirectory=$PROJECT_DIR
 ExecStart=$PY $PROJECT_DIR/bot.py
 Restart=always
-RestartSec=5
-# 反复起不来就别无限刷：10 分钟内超过 10 次则停下，等人来看
-StartLimitIntervalSec=600
-StartLimitBurst=10
+RestartSec=10
+# 永不永久放弃。
+#
+# 原来这里是「10 分钟内超过 10 次就停下等人来看」，但那个失败模式更糟：
+# 开机时网络没就绪、机房抖一阵，连续失败十来次之后 unit 进 failed 就再也不会
+# 自己回来 —— 表面上 start 说在跑，实际躺了好几天没人发现。
+# 宁可一直重试刷日志，也不要静默长期掉线。
+StartLimitIntervalSec=0
+# 配置错（token 无效）由 bot.py 用退出码 78 明确表示，这种情况不要再拉起来
+RestartPreventExitStatus=78
 KillSignal=SIGTERM
 TimeoutStopSec=30
 
