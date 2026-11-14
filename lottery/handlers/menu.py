@@ -17,7 +17,8 @@ from __future__ import annotations
 import logging
 
 from telegram import InlineKeyboardButton as Btn
-from telegram import InlineKeyboardMarkup as Markup, Update
+from telegram import InlineKeyboardMarkup as Markup
+from telegram import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.constants import ChatType, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
@@ -104,6 +105,41 @@ def _private_kb(tier: str) -> Markup:
     return Markup(rows)
 
 
+# ---------------------------------------------------------------- 主人常驻键盘
+#
+# 内联按钮会被后面的消息顶走，翻回去找很烦。常驻键盘挂在输入框上方，
+# 不管聊到哪儿都在手边。
+#
+# 只在主人的私聊里装：常驻键盘是「这个会话」级别的，群里装会对所有人显示，
+# 等于把主人工具摆到群成员面前。
+BTN_RESERVE = "📌 预留名额"
+BTN_ADJUST = "🛠 手动调分"
+BTN_LEDGER = "📒 积分流水"
+BTN_MENU = "🤖 功能菜单"
+BTN_HIDE = "⌨️ 收起键盘"
+
+OWNER_BOARD = {
+    BTN_RESERVE: "reserve",
+    BTN_ADJUST: "adjust",
+    BTN_LEDGER: "ledger",
+    BTN_MENU: "menu",
+    BTN_HIDE: "hide",
+}
+
+
+def owner_board() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(BTN_RESERVE), KeyboardButton(BTN_ADJUST)],
+            [KeyboardButton(BTN_LEDGER), KeyboardButton(BTN_MENU)],
+            [KeyboardButton(BTN_HIDE)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="点按钮，或直接打命令",
+    )
+
+
 OWNER_TOOLS = (
     "👑 <b>主人工具</b>\n\n"
     "只能在私聊里用。群里发这些命令、或者别人发，机器人都没有任何反应。\n\n"
@@ -138,6 +174,37 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             disable_web_page_preview=True,
         )
     )
+    # 主人的私聊再额外挂一排常驻键盘，之后不管聊到哪儿按钮都在
+    if tier == "owner" and not _in_group(update):
+        await update.effective_message.reply_text(
+            "下面这排按钮会一直留在输入框上方。", reply_markup=owner_board()
+        )
+
+
+async def owner_board_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """常驻键盘按下去发的是普通文字，这里接住它。只认主人、只认私聊。"""
+    msg = update.effective_message
+    if not msg or not msg.text:
+        return
+    action = OWNER_BOARD.get(msg.text.strip())
+    if action is None or _in_group(update) or not _is_owner(update, context):
+        return
+
+    if action == "hide":
+        await msg.reply_text("键盘收起来了。发 /menu 可以再叫出来。",
+                             reply_markup=ReplyKeyboardRemove())
+        return
+    if action == "menu":
+        await menu_cmd(update, context)
+        return
+
+    context.args = []
+    handler = {
+        "reserve": owner.reserve_cmd,
+        "adjust": owner.adjust_cmd,
+        "ledger": owner.ledger_cmd,
+    }[action]
+    await handler(update, context)
 
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

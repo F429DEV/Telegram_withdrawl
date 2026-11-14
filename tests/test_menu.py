@@ -210,3 +210,95 @@ class TestCallbackPermissions(MenuBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOwnerBoard(MenuBase):
+    """主人私聊的常驻键盘。"""
+
+    def _send(self, text, user_id, owners=(), private=True):
+        msg = (
+            FakeMessage(chat_id=user_id, chat_type=ChatType.PRIVATE) if private
+            else FakeMessage()
+        )
+        msg.text = text
+        msg.markups = []
+        orig = msg.reply_text
+
+        async def reply_text(body, **kw):
+            msg.markups.append(kw.get("reply_markup"))
+            return await orig(body, **kw)
+
+        msg.reply_text = reply_text
+        ctx = make_context(FakeBot(), owner_ids=owners)
+        asyncio.run(menu.owner_board_message(make_update(user_id, msg), ctx))
+        return msg
+
+    def test_layout_has_the_three_tools(self):
+        labels = [b.text for row in menu.owner_board().keyboard for b in row]
+        self.assertIn(menu.BTN_RESERVE, labels)
+        self.assertIn(menu.BTN_ADJUST, labels)
+        self.assertIn(menu.BTN_LEDGER, labels)
+        self.assertTrue(menu.owner_board().is_persistent, "要常驻，不能按一次就消失")
+
+    def test_owner_pressing_a_button_reaches_the_handler(self):
+        db.create_draft(CHAT, OWNER, {"prize": "会员卡"})
+        msg = self._send(menu.BTN_RESERVE, OWNER, owners=[OWNER])
+        self.assertTrue(msg.replies)
+        self.assertIn("预留", " ".join(msg.replies))
+
+    def test_non_owner_pressing_the_same_text_gets_nothing(self):
+        msg = self._send(menu.BTN_ADJUST, MEMBER, owners=[OWNER])
+        self.assertEqual(msg.replies, [], "别人原样打这几个字也不该有反应")
+
+    def test_group_message_is_ignored(self):
+        """常驻键盘只装在私聊；群里出现同样的文字一律不理。"""
+        msg = self._send(menu.BTN_ADJUST, OWNER, owners=[OWNER], private=False)
+        self.assertEqual(msg.replies, [])
+
+    def test_unrelated_text_is_ignored(self):
+        msg = self._send("今天天气不错", OWNER, owners=[OWNER])
+        self.assertEqual(msg.replies, [])
+
+    def test_hide_removes_the_keyboard(self):
+        from telegram import ReplyKeyboardRemove
+
+        msg = self._send(menu.BTN_HIDE, OWNER, owners=[OWNER])
+        self.assertTrue(msg.replies)
+        self.assertIsInstance(msg.markups[-1], ReplyKeyboardRemove)
+
+    def test_menu_command_installs_the_board_for_owner_only(self):
+        from telegram import ReplyKeyboardMarkup
+
+        for uid, owners, want in ((OWNER, [OWNER], True), (MEMBER, [OWNER], False)):
+            msg = FakeMessage(chat_id=uid, chat_type=ChatType.PRIVATE)
+            msg.markups = []
+            orig = msg.reply_text
+
+            async def reply_text(body, _m=msg, _o=orig, **kw):
+                _m.markups.append(kw.get("reply_markup"))
+                return await _o(body, **kw)
+
+            msg.reply_text = reply_text
+            ctx = make_context(FakeBot(), owner_ids=owners)
+            asyncio.run(menu.menu_cmd(make_update(uid, msg), ctx))
+            got = any(isinstance(m, ReplyKeyboardMarkup) for m in msg.markups)
+            self.assertEqual(got, want, f"user={uid}")
+
+    def test_board_never_installed_in_a_group(self):
+        from telegram import ReplyKeyboardMarkup
+
+        msg = FakeMessage()
+        msg.markups = []
+        orig = msg.reply_text
+
+        async def reply_text(body, **kw):
+            msg.markups.append(kw.get("reply_markup"))
+            return await orig(body, **kw)
+
+        msg.reply_text = reply_text
+        ctx = make_context(FakeBot(), owner_ids=[OWNER])
+        asyncio.run(menu.menu_cmd(make_update(OWNER, msg), ctx))
+        self.assertFalse(
+            any(isinstance(m, ReplyKeyboardMarkup) for m in msg.markups),
+            "群里装常驻键盘等于把主人工具摆给所有人看",
+        )

@@ -72,6 +72,14 @@ def register(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(shop.shop_callback, pattern=r"^sh:\d+:"))
     app.add_handler(CallbackQueryHandler(manage.view_all_callback, pattern=r"^v:\d+:"))
 
+    # ---- 主人私聊的常驻键盘（按钮按下来是普通文字）----
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
+            menu.owner_board_message,
+        )
+    )
+
     # ---- 对 ForceReply 的回复（要排在普通群消息前面）----
     app.add_handler(
         MessageHandler(GROUPS & filters.REPLY & filters.TEXT & ~filters.COMMAND, _reply_router)
