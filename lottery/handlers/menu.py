@@ -23,9 +23,12 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from .. import db, eligibility, ephemeral, texts
-from . import common, create, manage, participate, points, settings, shop
+from . import common, create, manage, owner, participate, points, settings, shop
 
 log = logging.getLogger(__name__)
+
+# 只有主人能点、且只在私聊里生效的按钮
+_OWNER_ACTIONS = {"owner", "reserve", "adjust", "ledger"}
 
 
 def _in_group(update: Update) -> bool:
@@ -102,17 +105,23 @@ def _private_kb(tier: str) -> Markup:
 
 
 OWNER_TOOLS = (
-    "👑 <b>主人工具</b>（只能私聊用，群里发没有任何反应）\n\n"
-    "<b>预留名额</b>\n"
-    "<code>/reserve</code> — 列出进行中的抽奖\n"
-    "<code>/reserve 12 @someone</code> — 给他留一个名额\n"
-    "<code>/unreserve 12 @someone</code> — 取消\n\n"
-    "<b>手动调分</b>\n"
-    "<code>/adjust</code> — 列出机器人见过的群\n"
-    "<code>/adjust &lt;群ID&gt; &lt;用户&gt; &lt;±数量&gt; [备注]</code>\n"
-    "<code>/ledger &lt;群ID&gt; &lt;用户&gt;</code> — 查积分流水（含备注）\n\n"
+    "👑 <b>主人工具</b>\n\n"
+    "只能在私聊里用。群里发这些命令、或者别人发，机器人都没有任何反应。\n\n"
+    "点下面的按钮会先列出可操作的对象（抽奖 / 群），"
+    "具体那一步还是要打一行命令 —— 预留给谁、给谁加多少分，按钮没法代你填。\n\n"
     "<i>这几条不在命令菜单里，也不在 /help 里。</i>"
 )
+
+
+def _owner_kb() -> Markup:
+    return Markup(
+        [
+            [Btn("📌 预留名额", callback_data="m:reserve")],
+            [Btn("🛠 手动调分", callback_data="m:adjust")],
+            [Btn("📒 积分流水", callback_data="m:ledger")],
+            [Btn("⬅️ 返回", callback_data="m:main")],
+        ]
+    )
 
 
 # ---------------------------------------------------------------- 入口
@@ -140,8 +149,12 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if action in ("new", "settings") and tier not in ("admin", "owner"):
         await query.answer(texts.NOT_ADMIN, show_alert=True)
         return
-    if action == "owner" and tier != "owner":
+    if action in _OWNER_ACTIONS and tier != "owner":
         await query.answer("这个按钮不是给你的。", show_alert=True)
+        return
+    if action in _OWNER_ACTIONS and _in_group(update):
+        # 兜底：主人工具一律不在群里动作，连回显都不要
+        await query.answer()
         return
 
     if action == "main":
@@ -164,7 +177,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             await query.edit_message_text(
                 OWNER_TOOLS, parse_mode=ParseMode.HTML,
-                reply_markup=Markup([[Btn("⬅️ 返回", callback_data="m:main")]]),
+                reply_markup=_owner_kb(),
             )
         except TelegramError:
             pass
@@ -186,6 +199,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "help": common.help_cmd,
         "new": create.new_giveaway,
         "settings": settings.settings_cmd,
+        # 主人工具：不带参数调用，各自会列出可操作的对象和用法
+        "reserve": owner.reserve_cmd,
+        "adjust": owner.adjust_cmd,
+        "ledger": owner.ledger_cmd,
     }
     handler = dispatch.get(action)
     if handler is None:

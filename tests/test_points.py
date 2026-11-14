@@ -27,11 +27,18 @@ class PointsBase(unittest.TestCase):
         self.tmp.cleanup()
 
     def settings(self, **kw):
+        kw.setdefault("enabled", True)
         return db.save_point_settings(self.CHAT, **kw)
 
 
 class TestEarnFromMessage(PointsBase):
-    def test_default_settings_give_points(self):
+    def test_off_by_default(self):
+        """没人开过的群不该悄悄攒分。"""
+        self.assertFalse(db.point_settings(self.CHAT)["enabled"])
+        self.assertEqual(points.earn_from_message(self.CHAT, user(), "今天天气不错").points, 0)
+
+    def test_once_enabled_gives_points(self):
+        self.settings(enabled=True)
         got = points.earn_from_message(self.CHAT, user(), "今天天气不错")
         self.assertEqual(got.points, 1)
         self.assertEqual(got.balance, 1)
@@ -89,7 +96,7 @@ class TestEarnFromMessage(PointsBase):
 
     def test_wallets_are_per_chat(self):
         self.settings(cooldown_seconds=0)
-        db.save_point_settings(-200, cooldown_seconds=0)
+        db.save_point_settings(-200, enabled=True, cooldown_seconds=0)
         points.earn_from_message(self.CHAT, user(), "甲群说话")
         points.earn_from_message(-200, user(), "乙群说话")
         self.assertEqual(db.point_balance(self.CHAT, 1), 1)

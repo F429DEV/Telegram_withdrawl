@@ -906,7 +906,9 @@ def save_chat_settings(chat_id: int, *, admin_only: bool | None = None,
 # ================================================================ 积分板块
 
 POINT_DEFAULTS = {
-    "enabled": True,
+    # 默认关着，管理员到 /settings → 积分设置 里主动打开。
+    # 机器人一进群就开始悄悄给人攒分，对群主是意料之外的行为。
+    "enabled": False,
     "per_message": 1,        # 每条有效发言给多少分
     "daily_cap": 50,         # 靠发言每天最多拿多少分，0 = 不限
     "cooldown_seconds": 60,  # 同一个人多久才能再拿一次发言分，0 = 不限
