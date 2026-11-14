@@ -19,7 +19,7 @@ from telegram.constants import ChatType, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from .. import db, eligibility, shop, texts
+from .. import db, eligibility, ephemeral, shop, texts
 
 log = logging.getLogger(__name__)
 
@@ -329,8 +329,10 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not await eligibility.is_admin(context.bot, chat.id, user.id, cfg.owner_ids):
         await msg.reply_text(texts.NOT_ADMIN)
         return
-    await msg.reply_text(
-        _main_text(chat.id), parse_mode=ParseMode.HTML, reply_markup=_main_kb(chat.id)
+    ephemeral.panel(
+        await msg.reply_text(
+            _main_text(chat.id), parse_mode=ParseMode.HTML, reply_markup=_main_kb(chat.id)
+        )
     )
 
 

@@ -16,7 +16,9 @@ from . import participate
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     if chat.type != ChatType.PRIVATE:
-        await update.message.reply_text("我在。群管理员发 /new 就能开抽奖，/help 看说明。")
+        await update.message.reply_text(
+            "我在。发 /menu 打开按钮菜单，/help 看文字说明。"
+        )
         return
 
     # 从群里「点我私聊」过来的：直接把那个群的专属邀请链接发给他

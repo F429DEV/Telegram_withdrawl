@@ -24,6 +24,7 @@ from lottery.config import Config
 log = logging.getLogger("lottery")
 
 COMMANDS = [
+    BotCommand("menu", "功能菜单（点按钮，不用记命令）"),
     BotCommand("new", "发起抽奖"),
     BotCommand("list", "查看进行中的抽奖"),
     BotCommand("view", "查看某个抽奖的详细参数"),

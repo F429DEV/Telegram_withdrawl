@@ -21,6 +21,10 @@ log = logging.getLogger(__name__)
 
 DEFAULT_SECONDS = 30
 
+# 交互面板（/menu、/settings 这类要点来点去的）活久一点 ——
+# 30 秒不够一个人把设置点完，面板中途消失比刷屏更烦人。
+PANEL_SECONDS = 300
+
 _app: Optional[Application] = None
 _seconds: int = DEFAULT_SECONDS
 
@@ -76,6 +80,19 @@ def keep(message: Optional[Message]) -> Optional[Message]:
     message_id = getattr(message, "message_id", None)
     if chat_id is not None:
         cancel(chat_id, message_id)
+    return message
+
+
+def panel(message: Optional[Message]) -> Optional[Message]:
+    """把一条消息当成交互面板：延长到 PANEL_SECONDS 再删。"""
+    chat_id = getattr(message, "chat_id", None)
+    message_id = getattr(message, "message_id", None)
+    if chat_id is None or message_id is None:
+        return message
+    cancel(chat_id, message_id)
+    chat = getattr(message, "chat", None)
+    if chat is not None and chat.type in _GROUPS:
+        schedule(chat_id, message_id, delay=PANEL_SECONDS)
     return message
 
 

@@ -13,7 +13,9 @@ from telegram.ext import (
     filters,
 )
 
-from . import common, create, manage, owner, participate, points, settings, shop
+from . import (
+    common, create, manage, menu, owner, participate, points, settings, shop,
+)
 
 GROUPS = filters.ChatType.GROUPS
 
@@ -28,6 +30,7 @@ def register(app: Application) -> None:
     # ---- 命令 ----
     app.add_handler(CommandHandler("start", common.start))
     app.add_handler(CommandHandler("help", common.help_cmd))
+    app.add_handler(CommandHandler("menu", menu.menu_cmd))
     app.add_handler(CommandHandler("viewmyinfo", common.viewmyinfo))
     app.add_handler(CommandHandler("invite", participate.invite_cmd))
     app.add_handler(CommandHandler(["new", "draw"], create.new_giveaway))
@@ -64,6 +67,7 @@ def register(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(create.draft_callback, pattern=r"^d:\d+:"))
     app.add_handler(CallbackQueryHandler(create.requirement_callback, pattern=r"^r:\d+:"))
     app.add_handler(CallbackQueryHandler(participate.join_callback, pattern=r"^j:\d+:"))
+    app.add_handler(CallbackQueryHandler(menu.menu_callback, pattern=r"^m:"))
     app.add_handler(CallbackQueryHandler(settings.settings_callback, pattern=r"^st:"))
     app.add_handler(CallbackQueryHandler(shop.shop_callback, pattern=r"^sh:\d+:"))
     app.add_handler(CallbackQueryHandler(manage.view_all_callback, pattern=r"^v:\d+:"))
